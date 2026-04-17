@@ -43,7 +43,7 @@
 
   <!-- ===== Output dirs ===== -->
   <PropertyGroup Condition="'$(Platform)'=='x64'">
-    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <OutDir>$(SolutionDir)build\$(Configuration)\Plugins\</OutDir>
     <IntDir>$(SolutionDir)build\intermediate\$(Configuration)\$(ProjectName)\</IntDir>
     <TargetName>BetterDrone</TargetName>
   </PropertyGroup>
