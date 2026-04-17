@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/markp/Documents/GitHub/StarRupture-Plugin-SDK/include/**)"
+    ]
+  }
+}
