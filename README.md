@@ -23,7 +23,7 @@ The warning thresholds (the visual indicators before hitting the limit) are auto
 
 ## Configuration
 
-Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first launch with the game's own default values pre-filled.
+Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first launch with the game's own default values pre-filled. You can also edit settings in-game via the ModLoader config editor (default key: **F2**).
 
 | Key | Description |
 |---|---|
@@ -32,7 +32,7 @@ Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first l
 | `MaxHeight` | Vertical range in cm (max `100000`) |
 | `MaxRailLength` | Rail length in cm (max `100000`) |
 
-Changes to the INI are applied live — no restart required.
+Changes are applied live — no restart required.
 
 ---
 
