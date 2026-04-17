@@ -210,5 +210,5 @@ jobs:
           $assets | ForEach-Object { Write-Host "  $_" }
 
           gh release create $tag @assets `
-            --title "Compass Plugin $tag" `
+            --title "BetterDrone Plugin $tag" `
             --generate-notes
