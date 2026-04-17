@@ -126,7 +126,7 @@ jobs:
 
       - name: Build Client Release
         run: |
-          msbuild "Compass_Plugin.sln" `
+          msbuild "BetterDrone.sln" `
             /p:Configuration="Client Release" `
             /p:Platform=x64 `
             /p:PostBuildEventUseInBuild=false `
@@ -142,7 +142,7 @@ jobs:
           $tag      = "${{ steps.tag.outputs.TAG }}"
           $repo     = "${{ github.repository }}"
           $ws       = $env:GITHUB_WORKSPACE
-          $name     = "Compass_Plugin"
+          $name     = "BetterDrone"
           $variant  = "Client"
           $varLower = "client"
 
@@ -196,7 +196,7 @@ jobs:
         run: |
           $tag     = "${{ steps.tag.outputs.TAG }}"
           $ws      = $env:GITHUB_WORKSPACE
-          $name    = "Compass_Plugin"
+          $name    = "BetterDrone"
           $variant = "Client"
           $varLow  = "client"
 
