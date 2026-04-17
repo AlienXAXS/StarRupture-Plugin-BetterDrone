@@ -10,6 +10,7 @@ struct DroneSettings
     float* warningRadius  = nullptr;  // 0x00BC  BuildingDroneWarningRadius
     float* maxHeight      = nullptr;  // 0x00C0  BuildingDroneMaxHeight
     float* warningHeight  = nullptr;  // 0x00C4  BuildingDroneWarningHeight
+    float* maxRailLength  = nullptr;  // 0x00C8  MaxDroneRailLenght
     bool   valid          = false;
 
     // Snapshot of CDO values captured at init, restored on shutdown.
@@ -18,6 +19,7 @@ struct DroneSettings
     float origWarningRadius= 0.f;
     float origMaxHeight    = 0.f;
     float origWarningHeight= 0.f;
+    float origMaxRailLength= 0.f;
 };
 
 extern DroneSettings g_drone;

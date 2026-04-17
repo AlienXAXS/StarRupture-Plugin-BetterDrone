@@ -24,11 +24,13 @@ bool InitDroneSettings()
     g_drone.warningRadius = reinterpret_cast<float*>(base + 0x00BC);
     g_drone.maxHeight     = reinterpret_cast<float*>(base + 0x00C0);
     g_drone.warningHeight = reinterpret_cast<float*>(base + 0x00C4);
+    g_drone.maxRailLength = reinterpret_cast<float*>(base + 0x00C8);
     g_drone.origSpeedPerSec   = *g_drone.speedPerSec;
     g_drone.origMaxRadius     = *g_drone.maxRadius;
     g_drone.origWarningRadius = *g_drone.warningRadius;
     g_drone.origMaxHeight     = *g_drone.maxHeight;
     g_drone.origWarningHeight = *g_drone.warningHeight;
+    g_drone.origMaxRailLength = *g_drone.maxRailLength;
     g_drone.valid             = true;
 
     LOG_DEBUG("InitDroneSettings: CDO found at %p", static_cast<void*>(cdo));
@@ -45,9 +47,10 @@ void RestoreCDODefaults()
     *g_drone.warningRadius = g_drone.origWarningRadius;
     *g_drone.maxHeight     = g_drone.origMaxHeight;
     *g_drone.warningHeight = g_drone.origWarningHeight;
+    *g_drone.maxRailLength = g_drone.origMaxRailLength;
 
-    LOG_DEBUG("RestoreCDODefaults: speed=%.0f maxRadius=%.0f maxHeight=%.0f",
-        g_drone.origSpeedPerSec, g_drone.origMaxRadius, g_drone.origMaxHeight);
+    LOG_DEBUG("RestoreCDODefaults: speed=%.0f maxRadius=%.0f maxHeight=%.0f railLength=%.0f",
+        g_drone.origSpeedPerSec, g_drone.origMaxRadius, g_drone.origMaxHeight, g_drone.origMaxRailLength);
 }
 
 void UpdateActiveDrones()
