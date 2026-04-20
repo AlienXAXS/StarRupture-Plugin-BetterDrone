@@ -1,5 +1,6 @@
 #include "drone_settings.h"
 #include "drone_config.h"
+#include "drone_wave_patch.h"
 #include "plugin_helpers.h"
 #include <plugin_interface.h>
 #include <Engine_classes.hpp>
@@ -114,6 +115,8 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     self->hooks->Engine->RegisterOnShutdown(OnEngineShutdown);
     self->hooks->World->RegisterOnWorldBeginPlay(OnWorldBeginPlay);
 
+    InitWavePatch();
+
     if (self->hooks->UI)
         self->hooks->UI->RegisterOnConfigChanged(OnConfigChanged);
 
@@ -125,6 +128,7 @@ extern "C" __declspec(dllexport) void PluginShutdown()
 {
     LOG_DEBUG("PluginShutdown: restoring CDO defaults and unregistering hooks");
 
+    ShutdownWavePatch();
     RestoreCDODefaults();
 
     if (g_self)
