@@ -14,7 +14,7 @@ static PluginInfo s_info =
 {
     "BetterDrone",
     "1.0.0",
-    "AlienXAXS",
+    "AlienX",
     "Adjust building drone limits via plugin config.",
     PLUGIN_INTERFACE_VERSION
 };
