@@ -10,10 +10,14 @@ static IPluginSelf* g_self = nullptr;
 
 IPluginSelf* GetSelf() { return g_self; }
 
+#ifndef MODLOADER_BUILD_TAG
+#define MODLOADER_BUILD_TAG "dev"
+#endif
+
 static PluginInfo s_info =
 {
     "BetterDrone",
-    "1.0.0",
+    MODLOADER_BUILD_TAG,
     "AlienX",
     "Adjust building drone limits via plugin config.",
     PLUGIN_INTERFACE_VERSION
