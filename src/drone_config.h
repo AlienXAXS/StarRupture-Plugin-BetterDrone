@@ -33,7 +33,7 @@ namespace DroneConfig
         static float ReadMaxRadius()       { return s_self ? s_self->config->ReadFloat(s_self, "Drone", "MaxRadius",        0.0f)  : 0.0f;  }
         static float ReadMaxHeight()       { return s_self ? s_self->config->ReadFloat(s_self, "Drone", "MaxHeight",        0.0f)  : 0.0f;  }
         static float ReadMaxRailLength()   { return s_self ? s_self->config->ReadFloat(s_self, "Drone", "MaxRailLength",    0.0f)  : 0.0f;  }
-        static bool  ReadAlwaysAllowDrone(){ return s_self ? s_self->config->ReadBool (s_self, "Drone", "AlwaysAllowDrone", false) : false; }
+        static bool  ReadAlwaysAllowDrone(){ return s_self ? s_self->config->ReadBool (s_self, "Drone", "Always Allow Drone", false) : false; }
 
     private:
         static IPluginSelf* s_self;
