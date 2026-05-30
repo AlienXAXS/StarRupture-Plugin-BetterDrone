@@ -20,7 +20,8 @@ static PluginInfo s_info =
     MODLOADER_BUILD_TAG,
     "AlienX",
     "Adjust building drone limits via plugin config.",
-    PLUGIN_INTERFACE_VERSION
+    PLUGIN_INTERFACE_VERSION,
+    PLUGIN_TARGET_CLIENT
 };
 
 static void OnEngineInit()
