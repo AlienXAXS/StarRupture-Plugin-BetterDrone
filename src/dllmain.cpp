@@ -123,7 +123,7 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     InitWavePatch();
 
     if (self->hooks->UI)
-        self->hooks->UI->RegisterOnConfigChanged(OnConfigChanged);
+        self->hooks->UI->RegisterOnConfigChanged(self, OnConfigChanged);
 
     LOG_INFO("BetterDrone initialised");
     return true;
@@ -143,7 +143,7 @@ extern "C" __declspec(dllexport) void PluginShutdown()
         g_self->hooks->World->UnregisterOnWorldBeginPlay(OnWorldBeginPlay);
 
         if (g_self->hooks->UI)
-            g_self->hooks->UI->UnregisterOnConfigChanged(OnConfigChanged);
+            g_self->hooks->UI->UnregisterOnConfigChanged(g_self, OnConfigChanged);
 
         g_self = nullptr;
     }
