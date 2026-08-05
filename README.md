@@ -19,6 +19,10 @@ Patches the game's drone developer settings CDO at runtime to apply your configu
 
 The warning thresholds (the visual indicators before hitting the limit) are automatically adjusted to 95% of the configured max values.
 
+### Interacting from the drone
+
+Normally you have to walk up to a building on foot to press **E** and open its UI — the game clears the interaction target for as long as the drone is out, and measures interaction range from your body rather than the drone. With this plugin the drone can do it too: fly up to a building, look at it, and press the interact key.
+
 ---
 
 ## Configuration
@@ -32,7 +36,12 @@ Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first l
 | `MaxHeight` | Vertical range in cm (max `100000`) |
 | `MaxRailLength` | Rail length in cm (max `100000`) |
 
-Changes are applied live — no restart required.
+| Key (`[Interaction]`) | Description |
+|---|---|
+| `Interact In Drone Mode` | Let the drone open building UIs (default `true`) |
+| `Interact Key` | Key used to interact while the drone is out (default `E`) — set this to match your in-game interact key |
+
+Changes are applied live — no restart required, except `Interact Key`, which is picked up on the next launch.
 
 ---
 

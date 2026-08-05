@@ -23,7 +23,10 @@ namespace DroneConfig
             s_entries[3] = { "Drone", "MaxRailLength",    ConfigValueType::Float, s_defRailLength, "Maximum rail length (cm)",                      0.0f, 100000.0f  };
             s_entries[4] = { "Drone", "Always Allow Drone", ConfigValueType::Boolean,  "false",         "Allow the building drone to be out in places it should not be, including during environmental wave events.",  0.0f, 1.0f       };
 
-            s_schema = { s_entries, 5 };
+            s_entries[5] = { "Interaction", "Interact In Drone Mode", ConfigValueType::Boolean, "true", "Let the drone open building UIs, the same as walking up to them on foot.", 0.0f, 1.0f };
+            s_entries[6] = { "Interaction", "Interact Key",           ConfigValueType::Keybind, "E",    "Key that interacts while the drone is out. Set this to match the game's own interact key.", 0.0f, 0.0f };
+
+            s_schema = { s_entries, 7 };
 
             if (s_self)
                 s_self->config->InitializeFromSchema(s_self, &s_schema);
@@ -35,13 +38,34 @@ namespace DroneConfig
         static float ReadMaxRailLength()   { return s_self ? s_self->config->ReadFloat(s_self, "Drone", "MaxRailLength",    0.0f)  : 0.0f;  }
         static bool  ReadAlwaysAllowDrone(){ return s_self ? s_self->config->ReadBool (s_self, "Drone", "Always Allow Drone", false) : false; }
 
+        static bool ReadInteractInDroneMode()
+        {
+            return s_self ? s_self->config->ReadBool(s_self, "Interaction", "Interact In Drone Mode", true) : false;
+        }
+
+        // Copies the configured interact key name into outBuffer, falling back to "E".
+        static void ReadInteractKey(char* outBuffer, int bufferSize)
+        {
+            if (!outBuffer || bufferSize <= 0)
+                return;
+
+            outBuffer[0] = '\0';
+
+            if (!s_self ||
+                !s_self->config->ReadString(s_self, "Interaction", "Interact Key", outBuffer, bufferSize, "E") ||
+                outBuffer[0] == '\0')
+            {
+                snprintf(outBuffer, static_cast<size_t>(bufferSize), "E");
+            }
+        }
+
     private:
         static IPluginSelf* s_self;
         static char s_defSpeed[32];
         static char s_defRadius[32];
         static char s_defHeight[32];
         static char s_defRailLength[32];
-        static ConfigEntry s_entries[5];
+        static ConfigEntry s_entries[7];
         static ConfigSchema s_schema;
     };
 }
