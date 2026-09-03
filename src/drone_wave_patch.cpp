@@ -9,9 +9,15 @@
 // Other checks in the original (interior, exclusion zones, sliding, being attacked) are
 // preserved because we only override the false case, not any of the true paths.
 
+static constexpr const char* kCanBuildingDroneBeActivePattern =
+    "48 89 5C 24 ?? 55 56 57 48 83 EC ?? 48 8B D9 48 8B 89";
+
 typedef bool(__fastcall* CanBuildingDroneBeActive_t)(void* thisPtr);
 static CanBuildingDroneBeActive_t g_original = nullptr;
 static HookHandle                 g_hook      = nullptr;
+
+// Resolved during OnPluginLoadHooks; 0 means the pattern missed on this build.
+static uintptr_t                  g_addr      = 0;
 
 static bool __fastcall Detour_CanBuildingDroneBeActive(void* thisPtr)
 {
@@ -21,20 +27,28 @@ static bool __fastcall Detour_CanBuildingDroneBeActive(void* thisPtr)
     return g_original ? g_original(thisPtr) : false;
 }
 
+void ResolveWavePatch(IPluginSelf* self, IPluginHookScanner* scanner)
+{
+    if (!self || !scanner)
+        return;
+
+    // Optional: a miss leaves the rest of BetterDrone working, which is what the
+    // old scan-at-init path did. The loader still lists it for the user.
+    g_addr = scanner->ResolveOptional(
+        self, "ACrCharacterPlayerBase::CanBuildingDroneBeActive", kCanBuildingDroneBeActivePattern);
+}
+
 bool InitWavePatch()
 {
-    auto* scanner = GetSelf()->scanner;
-
-    uintptr_t addr = scanner->FindPatternInMainModule(
-        "48 89 5C 24 ?? 55 56 57 48 83 EC ?? 48 8B D9 48 8B 89");
+    uintptr_t addr = g_addr;
 
     if (!addr)
     {
-        LOG_WARN("WavePatch: CanBuildingDroneBeActive pattern not found — wave restriction not patched");
+        LOG_WARN("WavePatch: CanBuildingDroneBeActive unresolved — wave restriction not patched");
         return false;
     }
 
-    LOG_INFO("WavePatch: CanBuildingDroneBeActive found at 0x%llX", addr);
+    LOG_INFO("WavePatch: CanBuildingDroneBeActive at 0x%llX", addr);
 
     g_hook = GetSelf()->hooks->Hooks->Install(
         addr,

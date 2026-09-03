@@ -30,9 +30,20 @@ namespace
     InteractVoid_t                 g_origInteractStarted   = nullptr;
     InteractBool_t                 g_origInteractCompleted = nullptr;
 
+    // Resolved during OnPluginLoadHooks; 0 means that pattern missed on this build.
+    uintptr_t g_addrTargetsChanged    = 0;
     uintptr_t g_addrInteractStarted   = 0;
     uintptr_t g_addrInteractCompleted = 0;
     uintptr_t g_addrInteract          = 0;
+
+    constexpr const char* kTargetsChangedPattern =
+        "40 55 56 41 56 48 8D AC 24 ?? ?? ?? ?? 48 81 EC F0 02 00 00";
+    constexpr const char* kInteractStartedPattern =
+        "40 53 56 57 48 83 EC 30 48 8B F1 C6 81";
+    constexpr const char* kInteractCompletedPattern =
+        "40 53 48 83 EC 40 80 B9 ?? ?? ?? ?? ?? 48 8B D9 75 ?? B0 01";
+    constexpr const char* kInteractPattern =
+        "40 55 56 41 56 41 57 48 8B EC 48 83 EC 78";
 
     HookHandle g_hookTargetsChanged    = nullptr;
     HookHandle g_hookInteractStarted   = nullptr;
@@ -198,24 +209,13 @@ namespace
 
     bool InstallHooks()
     {
-        auto* scanner = GetSelf()->scanner;
-        auto* hooks   = GetSelf()->hooks->Hooks;
+        auto* hooks = GetSelf()->hooks->Hooks;
 
-        const uintptr_t targetsChanged = scanner->FindPatternInMainModule(
-            "40 55 56 41 56 48 8D AC 24 ?? ?? ?? ?? 48 81 EC F0 02 00 00");
-
-        g_addrInteractStarted = scanner->FindPatternInMainModule(
-            "40 53 56 57 48 83 EC 30 48 8B F1 C6 81");
-
-        g_addrInteractCompleted = scanner->FindPatternInMainModule(
-            "40 53 48 83 EC 40 80 B9 ?? ?? ?? ?? ?? 48 8B D9 75 ?? B0 01");
-
-        g_addrInteract = scanner->FindPatternInMainModule(
-            "40 55 56 41 56 41 57 48 8B EC 48 83 EC 78");
+        const uintptr_t targetsChanged = g_addrTargetsChanged;
 
         if (!targetsChanged || !g_addrInteractStarted || !g_addrInteractCompleted || !g_addrInteract)
         {
-            LOG_WARN("DroneInteract: pattern scan failed — targetsChanged=0x%llX started=0x%llX "
+            LOG_WARN("DroneInteract: unresolved addresses — targetsChanged=0x%llX started=0x%llX "
                      "completed=0x%llX interact=0x%llX",
                      targetsChanged, g_addrInteractStarted, g_addrInteractCompleted, g_addrInteract);
             return false;
@@ -273,6 +273,23 @@ namespace
             g_origTargetsChanged = nullptr;
         }
     }
+}
+
+void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
+{
+    if (!self || !scanner)
+        return;
+
+    // Optional throughout: a miss leaves the rest of BetterDrone working, which
+    // is what the old scan-at-init path did. The loader still lists each miss.
+    g_addrTargetsChanged = scanner->ResolveOptional(
+        self, "ACrPlayerControllerBase::OnInteractableTargetsChanged", kTargetsChangedPattern);
+    g_addrInteractStarted = scanner->ResolveOptional(
+        self, "ACrPlayerControllerBase::NativeOnInputInteractStarted", kInteractStartedPattern);
+    g_addrInteractCompleted = scanner->ResolveOptional(
+        self, "ACrPlayerControllerBase::NativeOnInputInteractCompleted", kInteractCompletedPattern);
+    g_addrInteract = scanner->ResolveOptional(
+        self, "ACrPlayerControllerBase::NativeOnInputInteract", kInteractPattern);
 }
 
 bool InitDroneInteract()

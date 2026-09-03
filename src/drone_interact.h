@@ -19,5 +19,12 @@
 // InitDroneInteract hooks around the first and supplies the second from the
 // modloader's own keybind dispatch.
 
+struct IPluginSelf;
+struct IPluginHookScanner;
+
+// Resolve every AOB the interact path needs. Callable only from
+// OnPluginLoadHooks — the loader refuses scans made anywhere else.
+void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner);
+
 bool InitDroneInteract();
 void ShutdownDroneInteract();
