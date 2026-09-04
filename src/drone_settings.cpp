@@ -1,6 +1,7 @@
 #include "drone_settings.h"
 #include "plugin_helpers.h"
 #include <AuActorPlacement_classes.hpp>
+#include <Chimera_classes.hpp>
 #include <BP_FloatingDrone_classes.hpp>
 #include <Basic.hpp>
 
@@ -18,13 +19,12 @@ bool InitDroneSettings()
         return false;
     }
 
-    auto* base = reinterpret_cast<uint8_t*>(cdo);
-    g_drone.speedPerSec   = reinterpret_cast<float*>(base + 0x00B4);
-    g_drone.maxRadius     = reinterpret_cast<float*>(base + 0x00B8);
-    g_drone.warningRadius = reinterpret_cast<float*>(base + 0x00BC);
-    g_drone.maxHeight     = reinterpret_cast<float*>(base + 0x00C0);
-    g_drone.warningHeight = reinterpret_cast<float*>(base + 0x00C4);
-    g_drone.maxRailLength = reinterpret_cast<float*>(base + 0x00C8);
+    g_drone.speedPerSec   = &cdo->BuildingDroneSpeedPerSec;
+    g_drone.maxRadius     = &cdo->BuildingDroneMaxRadius;
+    g_drone.warningRadius = &cdo->BuildingDroneWarningRadius;
+    g_drone.maxHeight     = &cdo->BuildingDroneMaxHeight;
+    g_drone.warningHeight = &cdo->BuildingDroneWarningHeight;
+    g_drone.maxRailLength = &cdo->MaxDroneRailLenght;
     g_drone.origSpeedPerSec   = *g_drone.speedPerSec;
     g_drone.origMaxRadius     = *g_drone.maxRadius;
     g_drone.origWarningRadius = *g_drone.warningRadius;
@@ -80,20 +80,19 @@ void UpdateActiveDrones()
         if (!obj || obj->IsDefaultObject() || !obj->IsA(droneClass))
             continue;
 
-        auto* base = reinterpret_cast<uint8_t*>(obj);
-        auto* settings = *reinterpret_cast<SDK::UAuActorPlacementDeveloperSettings**>(base + 0x03E0);
+        auto* drone = static_cast<SDK::ACrCharacterDroneBase*>(obj);
+        SDK::UAuActorPlacementDeveloperSettings* settings = drone->PlacementDeveloperSettings;
         if (!settings)
         {
             LOG_DEBUG("UpdateActiveDrones: drone instance has null PlacementDeveloperSettings, skipping");
             continue;
         }
 
-        auto* sb = reinterpret_cast<uint8_t*>(settings);
-        *reinterpret_cast<float*>(sb + 0x00B4) = *g_drone.speedPerSec;
-        *reinterpret_cast<float*>(sb + 0x00B8) = *g_drone.maxRadius;
-        *reinterpret_cast<float*>(sb + 0x00BC) = *g_drone.warningRadius;
-        *reinterpret_cast<float*>(sb + 0x00C0) = *g_drone.maxHeight;
-        *reinterpret_cast<float*>(sb + 0x00C4) = *g_drone.warningHeight;
+        settings->BuildingDroneSpeedPerSec      = *g_drone.speedPerSec;
+        settings->BuildingDroneMaxRadius        = *g_drone.maxRadius;
+        settings->BuildingDroneWarningRadius    = *g_drone.warningRadius;
+        settings->BuildingDroneMaxHeight        = *g_drone.maxHeight;
+        settings->BuildingDroneWarningHeight    = *g_drone.warningHeight;
         ++updated;
     }
 

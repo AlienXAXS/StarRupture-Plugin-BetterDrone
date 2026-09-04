@@ -5,6 +5,7 @@
 #include <Chimera_classes.hpp>
 #include <Engine_classes.hpp>
 #include <atomic>
+#include <cstring>
 #include <windows.h>
 
 namespace
@@ -14,6 +15,17 @@ namespace
     // OnInteractableTargetsChanged itself reads when it measures the range
     // between the character and a candidate interactable.
     constexpr size_t k_componentToWorldTranslation = 0x210;
+
+    // ACrPlayerControllerBase::PlayerControlState. Not a UProperty, so the
+    // generated SDK leaves it inside Pad_E88 and it has to be reached by
+    // offset; OnInteractableTargetsChanged reads it at 0x1475FB0AA and gates on
+    // it twice, at 0x1475FB0B9 (== Interacting) and 0x1475FB155 (== Deconstruct).
+    constexpr size_t k_pcPlayerControlState = 0xE88;
+
+    // ECrPlayerControlState values, from the game's own UEnum. Only the two the
+    // drone path has to reconcile are named here.
+    constexpr uint8_t k_controlStateNormal          = 0;
+    constexpr uint8_t k_controlStateDeconstructMode = 2;
 
     // Both the game's own interact mapping (if this build still binds it while
     // the drone is out) and our synthetic press land on the same native
@@ -61,6 +73,20 @@ namespace
     std::atomic<uint64_t> g_lastReleaseMs{ 0 };
 
     bool g_loggedDuplicate = false;
+
+    // Why the last keypress did not turn into an interact. Compared by pointer
+    // -- every caller passes a distinct literal -- so a key held down against a
+    // condition that will not change logs once rather than once per frame.
+    const char* g_lastGate = nullptr;
+
+    void LogGateOnce(const char* reason)
+    {
+        if (g_lastGate == reason)
+            return;
+
+        g_lastGate = reason;
+        LOG_DEBUG("DroneInteract: interact key seen but nothing sent -- %s", reason);
+    }
 
     SDK::ACrCharacterPlayerBase* DroneCharacter(SDK::ACrPlayerControllerBase* pc)
     {
@@ -131,6 +157,26 @@ namespace
         const auto* camTranslation  = reinterpret_cast<const double*>(
             reinterpret_cast<const uint8_t*>(droneCam) + k_componentToWorldTranslation);
 
+        // A second gate sits ahead of the drone one: DeconstructMode jumps
+        // straight to ResetInteractableActor. The drone is summoned from the
+        // building tool -- CanActivateDrone returns true outright when the
+        // controller is already in DeconstructMode -- so that state is simply
+        // what the drone is flown in, and the gate is closed the whole time the
+        // drone is out with delete mode selected. Only that one value is
+        // rewritten: BuildingMode already passes, and Interacting means an
+        // interaction is genuinely in flight.
+        //
+        // This one is a deliberate override rather than a fix. The gate is on
+        // the controller, not the drone, so the player on foot in delete mode is
+        // blocked in exactly the same way; suppressing it lets the drone open a
+        // building's UI without first switching back to construction mode.
+        // Nothing collides: NativeOnInputInteractStarted has no deconstruct
+        // branch, and opening a building UI is an instant interaction, so it
+        // never sets PlayerControlState to Interacting and never drops the
+        // player out of delete mode.
+        auto*         controlState      = reinterpret_cast<uint8_t*>(pc) + k_pcPlayerControlState;
+        const uint8_t savedControlState = *controlState;
+
         const SDK::EPlayerCharacterStatus savedStatus = character->Status;
         const double savedTranslation[3] = { rootTranslation[0], rootTranslation[1], rootTranslation[2] };
 
@@ -139,8 +185,12 @@ namespace
         rootTranslation[1] = camTranslation[1];
         rootTranslation[2] = camTranslation[2];
 
+        if (savedControlState == k_controlStateDeconstructMode)
+            *controlState = k_controlStateNormal;
+
         g_origTargetsChanged(pc, newTargets);
 
+        *controlState      = savedControlState;
         rootTranslation[0] = savedTranslation[0];
         rootTranslation[1] = savedTranslation[1];
         rootTranslation[2] = savedTranslation[2];
@@ -178,6 +228,10 @@ namespace
             reinterpret_cast<InteractVoid_t>(g_addrInteract)(pc);
     }
 
+    // Spelled out rather than reusing DroneCharacter() so a keypress that goes
+    // nowhere says which condition stopped it. Every one of these is a state the
+    // player can be in legitimately, so silence here is indistinguishable from
+    // the key never arriving at all -- which is the report this has to answer.
     void OnTick(float)
     {
         const bool press   = g_pendingPress.exchange(false);
@@ -186,21 +240,55 @@ namespace
             return;
 
         SDK::ACrPlayerControllerBase* pc = LocalController();
-
-        SDK::ACrCharacterPlayerBase* character = DroneCharacter(pc);
-        if (!character || character->bDead)
+        if (!pc)
+        {
+            LogGateOnce("no local ACrPlayerControllerBase");
             return;
+        }
+
+        SDK::ACrCharacterPlayerBase* character = pc->CrChar;
+        if (!character)
+        {
+            LogGateOnce("player controller has no CrChar");
+            return;
+        }
+
+        if (character->Status != SDK::EPlayerCharacterStatus::BuildingDrone)
+        {
+            LogGateOnce("character is not in drone mode");
+            return;
+        }
+
+        if (!DroneConfig::Config::ReadInteractInDroneMode())
+        {
+            LogGateOnce("'Interact In Drone Mode' is disabled in the config");
+            return;
+        }
+
+        if (character->bDead)
+        {
+            LogGateOnce("character is dead");
+            return;
+        }
 
         // NativeOnInputInteractCompleted dereferences the pawn as a player
         // character without checking it, so refuse to call in if it is not one.
         if (pc->Pawn != static_cast<SDK::APawn*>(character))
+        {
+            LogGateOnce("the possessed pawn is not the player character");
             return;
+        }
 
+        g_lastGate = nullptr;
         DispatchInteract(pc, press, release);
     }
 
     void OnInteractKey(EModKey, EModKeyEvent event)
     {
+        // The only place that can tell "the modloader never dispatched the key"
+        // apart from "it arrived and a gate in OnTick rejected it".
+        LOG_DEBUG("DroneInteract: interact key %s", event == EModKeyEvent::Pressed ? "pressed" : "released");
+
         if (event == EModKeyEvent::Pressed)
             g_pendingPress.store(true, std::memory_order_relaxed);
         else
@@ -316,6 +404,41 @@ bool InitDroneInteract()
 
     LOG_INFO("DroneInteract: building interaction enabled in drone mode on '%s'", g_keyName);
     return true;
+}
+
+void RebindInteractKey()
+{
+    auto* input = GetSelf()->hooks->Input;
+    if (!input)
+        return;
+
+    char newKey[sizeof(g_keyName)] = {};
+    DroneConfig::Config::ReadInteractKey(newKey, sizeof(newKey));
+
+    if (strcmp(newKey, g_keyName) == 0)
+        return;
+
+    // Unregister under the name this registered with. The loader rebinds a
+    // named entry in place and never tells the plugin, so matching on the key
+    // we think is live is exactly how a dead callback gets left behind.
+    if (g_keyName[0])
+    {
+        input->UnregisterKeybindByName(g_keyName, EModKeyEvent::Pressed,  &OnInteractKey);
+        input->UnregisterKeybindByName(g_keyName, EModKeyEvent::Released, &OnInteractKey);
+    }
+
+    strncpy_s(g_keyName, newKey, _TRUNCATE);
+
+    if (!g_keyName[0])
+    {
+        LOG_WARN("DroneInteract: interact key cleared -- interaction in drone mode is now unbound");
+        return;
+    }
+
+    input->RegisterKeybindByName(g_keyName, EModKeyEvent::Pressed,  &OnInteractKey);
+    input->RegisterKeybindByName(g_keyName, EModKeyEvent::Released, &OnInteractKey);
+
+    LOG_INFO("DroneInteract: interact key rebound to '%s'", g_keyName);
 }
 
 void ShutdownDroneInteract()

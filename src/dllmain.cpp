@@ -60,6 +60,21 @@ static void OnEngineInit()
 
 static void OnConfigChanged(const char* section, const char* key, const char* newValue)
 {
+    if (!section || !key || !newValue)
+        return;
+
+    // [Interaction] is not gated on g_drone.valid -- it has nothing to do with
+    // the settings CDO, and dropping it here is why rebinding the interact key
+    // did nothing until the plugin was reloaded.
+    if (strcmp(section, "Interaction") == 0)
+    {
+        // "Interact In Drone Mode" is re-read on every use and needs no action;
+        // the key is held by the loader's keybind registry and must be moved.
+        if (strcmp(key, "Interact Key") == 0)
+            RebindInteractKey();
+        return;
+    }
+
     if (!g_drone.valid || strcmp(section, "Drone") != 0)
         return;
 

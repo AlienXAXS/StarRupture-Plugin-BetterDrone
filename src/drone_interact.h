@@ -3,7 +3,7 @@
 // Lets the player open a building's UI while flying the building drone, the
 // same way walking up to it and pressing the interact key does on foot.
 //
-// Two separate things stop this in the stock game:
+// Three separate things stop this in the stock game:
 //
 //   * ACrPlayerControllerBase::OnInteractableTargetsChanged returns early --
 //     after clearing CurrentInteractableActor -- whenever
@@ -11,6 +11,15 @@
 //     targeted while the drone is out. The same function also measures the
 //     interaction range from the character's root component, which stays parked
 //     wherever the player left their body.
+//
+//   * The same function clears CurrentInteractableActor again, earlier, when
+//     PlayerControlState is DeconstructMode. The drone is summoned from the
+//     building tool and UCrBuildingComponent::CanActivateDrone returns true
+//     outright for a controller already in DeconstructMode, so that is simply
+//     the state the drone is flown in and the gate stays closed the whole time
+//     delete mode is selected. Suppressing this one is a deliberate override,
+//     not a fix: the gate is on the controller, so a player on foot in delete
+//     mode is blocked identically.
 //
 //   * The interact key lives in the BasePlayerAlive input config, which
 //     ActivateBuildingDrone unbinds in favour of the Drone config, so the key
@@ -27,4 +36,10 @@ struct IPluginHookScanner;
 void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner);
 
 bool InitDroneInteract();
+
+// Re-read [Interaction] Interact Key and move the registration to it. Call on
+// a config change: InitDroneInteract reads the key once, so without this a
+// rebind does nothing until the plugin is reloaded.
+void RebindInteractKey();
+
 void ShutdownDroneInteract();
