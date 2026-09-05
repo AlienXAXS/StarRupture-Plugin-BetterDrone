@@ -6,7 +6,6 @@ namespace DroneConfig
     char         Config::s_defSpeed[32]      = {};
     char         Config::s_defRadius[32]     = {};
     char         Config::s_defHeight[32]     = {};
-    char         Config::s_defRailLength[32] = {};
-    ConfigEntry  Config::s_entries[7]        = {};
+    ConfigEntry  Config::s_entries[6]        = {};
     ConfigSchema Config::s_schema            = {};
 }

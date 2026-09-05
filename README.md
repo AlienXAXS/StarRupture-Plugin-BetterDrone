@@ -34,7 +34,6 @@ Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first l
 | `SpeedPerSec` | Movement speed in cm/s (max `4000`) |
 | `MaxRadius` | Horizontal range in cm (max `1000000`) |
 | `MaxHeight` | Vertical range in cm (max `100000`) |
-| `MaxRailLength` | Rail length in cm (max `100000`) |
 
 | Key (`[Interaction]`) | Description |
 |---|---|

@@ -41,19 +41,17 @@ static void OnEngineInit()
     DroneConfig::Config::InitializeWithCDODefaults(
         *g_drone.speedPerSec,
         *g_drone.maxRadius,
-        *g_drone.maxHeight,
-        *g_drone.maxRailLength);
+        *g_drone.maxHeight);
 
     *g_drone.speedPerSec   = DroneConfig::Config::ReadSpeedPerSec();
     *g_drone.maxRadius     = DroneConfig::Config::ReadMaxRadius();
     *g_drone.maxHeight     = DroneConfig::Config::ReadMaxHeight();
-    *g_drone.maxRailLength = DroneConfig::Config::ReadMaxRailLength();
     *g_drone.warningRadius = *g_drone.maxRadius * 0.95f;
     *g_drone.warningHeight = *g_drone.maxHeight * 0.95f;
 
-    LOG_DEBUG("OnEngineInit: applied — speed=%.0f maxRadius=%.0f warningRadius=%.0f maxHeight=%.0f warningHeight=%.0f railLength=%.0f",
+    LOG_DEBUG("OnEngineInit: applied — speed=%.0f maxRadius=%.0f warningRadius=%.0f maxHeight=%.0f warningHeight=%.0f",
         *g_drone.speedPerSec, *g_drone.maxRadius, *g_drone.warningRadius,
-        *g_drone.maxHeight, *g_drone.warningHeight, *g_drone.maxRailLength);
+        *g_drone.maxHeight, *g_drone.warningHeight);
 
     UpdateActiveDrones();
 }
@@ -94,10 +92,6 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
     {
         *g_drone.maxHeight     = val;
         *g_drone.warningHeight = val * 0.95f;
-    }
-    else if (strcmp(key, "MaxRailLength") == 0)
-    {
-        *g_drone.maxRailLength = val;
     }
     else
     {
