@@ -363,6 +363,23 @@ namespace
     }
 }
 
+// Every address this file resolves is a function entry that a detour gets
+// written over, so each request declares PLUGIN_SCAN_FUNCTION_START. The loader
+// then checks the match against the executable's exception directory instead of
+// trusting that the bytes lined up -- a pattern that drifted into the middle of
+// some other function is refused rather than detoured.
+static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
+                                 const char* hookName, const char* pattern)
+{
+    PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
+    req.hookName = hookName;
+    req.pattern  = pattern;
+    req.kind     = PLUGIN_SCAN_FUNCTION_START;
+    req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
+
+    return scanner->Resolve(self, &req);
+}
+
 void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
 {
     if (!self || !scanner)
@@ -370,14 +387,14 @@ void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
 
     // Optional throughout: a miss leaves the rest of BetterDrone working, which
     // is what the old scan-at-init path did. The loader still lists each miss.
-    g_addrTargetsChanged = scanner->ResolveOptional(
-        self, "ACrPlayerControllerBase::OnInteractableTargetsChanged", kTargetsChangedPattern);
-    g_addrInteractStarted = scanner->ResolveOptional(
-        self, "ACrPlayerControllerBase::NativeOnInputInteractStarted", kInteractStartedPattern);
-    g_addrInteractCompleted = scanner->ResolveOptional(
-        self, "ACrPlayerControllerBase::NativeOnInputInteractCompleted", kInteractCompletedPattern);
-    g_addrInteract = scanner->ResolveOptional(
-        self, "ACrPlayerControllerBase::NativeOnInputInteract", kInteractPattern);
+    g_addrTargetsChanged = ResolveFunction(self, scanner,
+        "ACrPlayerControllerBase::OnInteractableTargetsChanged", kTargetsChangedPattern);
+    g_addrInteractStarted = ResolveFunction(self, scanner,
+        "ACrPlayerControllerBase::NativeOnInputInteractStarted", kInteractStartedPattern);
+    g_addrInteractCompleted = ResolveFunction(self, scanner,
+        "ACrPlayerControllerBase::NativeOnInputInteractCompleted", kInteractCompletedPattern);
+    g_addrInteract = ResolveFunction(self, scanner,
+        "ACrPlayerControllerBase::NativeOnInputInteract", kInteractPattern);
 }
 
 bool InitDroneInteract()

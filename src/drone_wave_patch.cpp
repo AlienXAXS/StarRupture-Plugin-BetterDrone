@@ -34,8 +34,17 @@ void ResolveWavePatch(IPluginSelf* self, IPluginHookScanner* scanner)
 
     // Optional: a miss leaves the rest of BetterDrone working, which is what the
     // old scan-at-init path did. The loader still lists it for the user.
-    g_addr = scanner->ResolveOptional(
-        self, "ACrCharacterPlayerBase::CanBuildingDroneBeActive", kCanBuildingDroneBeActivePattern);
+    //
+    // FUNCTION_START because a detour is written over this address: the loader
+    // checks the match is a real function entry with room for the 14-byte jump,
+    // rather than taking the pattern's word for it.
+    PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
+    req.hookName = "ACrCharacterPlayerBase::CanBuildingDroneBeActive";
+    req.pattern  = kCanBuildingDroneBeActivePattern;
+    req.kind     = PLUGIN_SCAN_FUNCTION_START;
+    req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
+
+    g_addr = scanner->Resolve(self, &req);
 }
 
 bool InitWavePatch()
