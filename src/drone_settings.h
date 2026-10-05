@@ -1,17 +1,7 @@
 #pragma once
+#include <plugin_interface.h>
 #include <cstdint>
 
-// Live pointers into the UAuActorPlacementDeveloperSettings CDO.
-// Writes take effect immediately on the next game tick that reads them.
-//
-// These are taken from the SDK's typed fields, never from hardcoded offsets.
-// A previous version hardcoded them, the layout shifted by 0x10 in a game
-// update, and the writes below landed on a neighbouring TSoftObjectPtr in the
-// CDO, overwriting its FSoftObjectPath::AssetPath::PackageName with the float
-// bits of the configured value. The first attempt to enter building placement
-// mode then crashed the game inside
-// UAuBuildingGridSubsystem::GetDecalActor -> FSoftObjectPath::ResolveObjectInternal
-// -> FName::AppendString, resolving a name id that does not exist.
 struct DroneSettings
 {
     float* speedPerSec    = nullptr;  // BuildingDroneSpeedPerSec
@@ -34,3 +24,31 @@ extern DroneSettings g_drone;
 bool InitDroneSettings();
 void RestoreCDODefaults();
 void UpdateActiveDrones();
+void RequestUpdateActiveDrones();
+void RequestMaxRadius(float radiusCm);
+void RequestMaxHeight(float heightCm);
+
+bool IsInGameSession();
+void InitGameSessionTracking(IPluginSelf* self);
+void ShutdownGameSessionTracking(IPluginSelf* self);
+
+void OnDroneTick(float deltaSeconds);
+
+// Reads Boost Key from config and applies it: a custom combo, or following
+// the game's Sprint key if it's DroneConfig::kBoostKeyFollowsSprint.
+void RegisterBoostKey(IPluginSelf* self);
+void UnregisterBoostKey(IPluginSelf* self);
+
+// Unregisters the current boost key and applies newKeyName in its place: a
+// custom combo, or following the game's Sprint key if newKeyName is
+// DroneConfig::kBoostKeyFollowsSprint. Call from a live rebind
+// (OnConfigChanged for Controls/Boost Key) instead of relying on the
+// loader's own UpdateKeybindByName, which only patches a registration
+// whose stored combo string matches the old value exactly -- the Released
+// half is registered under the bare base key, not the full combo, so it
+// wouldn't be found -- and which never fires at all for the sentinel,
+// since nothing is ever registered under that name.
+void RebindBoostKey(IPluginSelf* self, const char* newKeyName);
+
+// Call whenever the boost key name changes.
+void UpdateBoostKeyCache(const char* keyName);
