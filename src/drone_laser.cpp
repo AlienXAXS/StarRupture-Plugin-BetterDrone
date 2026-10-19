@@ -1,15 +1,21 @@
 #include "drone_laser.h"
 #include "drone_config.h"
+#include "drone_heat_display.h"
 #include "drone_interact.h"
 #include "drone_key_vk.h"
+#include "drone_laser_fx.h"
+#include "drone_map_marker.h"
 #include "mining_natives.h"
+#include "named_object.h"
 #include "object_ref.h"
 #include "plugin_helpers.h"
 #include <plugin_interface.h>
 #include <Chimera_classes.hpp>
 #include <Engine_classes.hpp>
 #include <GameplayAbilities_classes.hpp>
+#include <UMG_classes.hpp>
 #include <BP_MiningToolActor_classes.hpp>
+#include <GA_MiningToolPassiveCooling_classes.hpp>
 #include <atomic>
 #include <climits>
 #include <cstdio>
@@ -24,11 +30,38 @@ namespace
     // through a wall. It is the second of the project's 32 trace slots.
     constexpr SDK::ETraceTypeQuery kOreTraceChannel = SDK::ETraceTypeQuery::TraceTypeQuery2;
 
-    // How often a missing mining tool CDO is looked for again: the lookup is
-    // a GObjects scan.
-    constexpr float kCdoRetryInterval = 5.0f;
-
     constexpr const char* kMiningToolActorCdoName = "Default__BP_MiningToolActor_C";
+    constexpr const char* kCoolingAbilityCdoName  = "Default__GA_MiningToolPassiveCooling_C";
+    constexpr const char* kHeatOverTimeCdoName    = "Default__GE_WeaponHeatOverTimeBase_C";
+    constexpr const char* kHeatStackCdoName       = "Default__GE_WeaponHeatStackBase_C";
+
+    // The mining tool's heat: while it fires, GE_WeaponHeatOverTimeBase adds
+    // one stack of GE_WeaponHeatStackBase every Period, up to the stack
+    // effect's StackLimitCount, and the passive cooling ability takes one off
+    // every SingleStackDuration once its start delay has run out (a longer
+    // delay after an overheat). The heating effect does nothing while the
+    // player carries Cheat.UnlimitedWeaponHeat. The laser keeps a count of
+    // its own and reads every one of these numbers from the same defaults
+    // the tool uses; the drill's own heat is not touched.
+    //
+    // The stock values, for while those defaults are not loaded.
+    constexpr float kStockHeatStackSeconds  = 0.2f;
+    constexpr int   kStockHeatStackLimit    = 100;
+    constexpr float kStockStackCoolSeconds  = 0.82f;
+    constexpr float kStockCoolDelay         = 8.0f;
+    constexpr float kStockOverheatCoolDelay = 15.0f;
+
+    // The game level the tool's heating effect is applied at.
+    constexpr float kHeatEffectLevel = 1.0f;
+
+    // How long the laser holds an ore the crosshair has just slipped off. A
+    // small chunk drops out of the trace for a frame or two as the drone
+    // drifts; without this each slip stops and restarts the mining request.
+    constexpr float kTargetGraceSeconds = 0.35f;
+
+    // When the line trace finds no ore, a sphere of this radius (cm) along
+    // the same line catches a small ore actor just beside the crosshair.
+    constexpr float kAimAssistRadius = 25.0f;
 
     // UCrInventoryComponent::GetAmountCanAdd(item defaults, amount): how
     // many of an item fit in the bag, up to the amount asked. It is the same
@@ -53,25 +86,16 @@ namespace
     char g_keyPressedName[64]  = {};
     char g_keyReleasedName[64] = {};
 
-    // A class default object found by name and kept as an ObjectRef. A miss is
-    // looked for again every kCdoRetryInterval seconds, since the lookup is a
-    // GObjects scan and the class may not be loaded yet.
-    struct CdoSlot
-    {
-        const char*             name;
-        ObjectRef<SDK::UObject> ref;
-        float                   retry      = 0.0f;
-        bool                    missLogged = false;
-    };
-
     enum class OreKind { None, Actor, Vein };
 
-    // What the trace picked this tick.
+    // What the trace picked this tick, and where the beam ends: the hit, or
+    // the end of the range.
     struct Aim
     {
         OreKind             kind = OreKind::None;
         SDK::AActor*        ore  = nullptr;   // OreKind::Actor
         SDK::UPhysicalMaterial* vein = nullptr;   // OreKind::Vein
+        SDK::FVector        point{};
     };
 
     // Game thread only.
@@ -85,22 +109,71 @@ namespace
         ObjectRef<SDK::UCrMiningComponent>  comp;
         bool                                mining = false;
 
-        // Set by a full bag, an overheated drill or a refusal that holding
-        // the key cannot fix; cleared when the key is let go.
+        // Set by a full bag, an overheated drill or laser, or a refusal that
+        // holding the key cannot fix; cleared when the key is let go.
         bool                                latched = false;
+
+        // The key's state last tick, to tell a fresh press.
+        bool                                keyWasHeld = false;
 
         // The mining tool's item data: its damage, range and hit interval.
         // BetterCheats' Mining Damage, Range and Hit Rate rows write into this
         // same object, so the laser follows them.
-        CdoSlot                             toolData{ MiningNatives::kMiningToolCdoName };
+        NamedObject                         toolData{ MiningNatives::kMiningToolCdoName };
 
         // The mining tool actor's defaults, for the tag it is overheated by.
-        CdoSlot                             toolActor{ kMiningToolActorCdoName };
+        NamedObject                         toolActor{ kMiningToolActorCdoName };
+
+        // The passive cooling ability's defaults, for its cooling numbers.
+        // BetterCheats' Overheat Cooldown row writes into the same object.
+        NamedObject                         coolingAbility{ kCoolingAbilityCdoName };
+
+        // The heating effect's defaults, for its period, and the heat stack
+        // effect's, for its limit.
+        NamedObject                         heatOverTime{ kHeatOverTimeCdoName };
+        NamedObject                         heatStack{ kHeatStackCdoName };
+
+        // The fire rate multiplier the character carries while the drill is
+        // in hand (its upgrades and buffs), as last seen on foot. In the
+        // drone the attribute holds the building tool's instead.
+        float                               drillFireRateMod = 1.0f;
+
+        // How long the trace has found no ore while an ore actor is being
+        // mined, and where the beam last ended.
+        float                               missSeconds = 0.0f;
+        SDK::FVector                        lastHit{};
 
         const char*                         lastGate = nullptr;
     };
 
     LaserState g_s;
+
+    // The laser's heat, in the stock tool's stacks. Game thread only.
+    struct Heat
+    {
+        int   stacks     = 0;
+        float riseClock  = 0.0f;    // firing time toward the next stack
+        float delay      = 0.0f;    // left before cooling starts
+        float drainClock = 0.0f;    // cooling time toward the next stack off
+        bool  firing     = false;   // last tick
+        bool  overheated = false;   // locked out until the heat is gone
+
+        float stackSeconds      = kStockHeatStackSeconds;
+        int   stackLimit        = kStockHeatStackLimit;
+        float stackCoolSeconds  = kStockStackCoolSeconds;
+        float coolDelay         = kStockCoolDelay;
+        float overheatCoolDelay = kStockOverheatCoolDelay;
+    };
+
+    Heat g_heat;
+
+    // What the tick decided: whether the laser fires, and at what.
+    struct Frame
+    {
+        SDK::ACrCharacterPlayerBase* character = nullptr;
+        bool                         firing    = false;
+        DroneLaserFx::Shot           shot{};
+    };
 
     void LogGateOnce(const char* reason)
     {
@@ -168,37 +241,19 @@ namespace
 
     // ---- the mining tool --------------------------------------------------------
 
-    SDK::UObject* ResolveCdo(CdoSlot& slot, const SDK::UClass* cls, float deltaSeconds)
-    {
-        if (SDK::UObject* object = slot.ref.Get())
-            return object;
-
-        slot.retry -= deltaSeconds;
-        if (slot.retry > 0.0f)
-            return nullptr;
-        slot.retry = kCdoRetryInterval;
-
-        IPluginHooks* hooks = GetSelf() ? GetSelf()->hooks : nullptr;
-        IPluginObjectWalker* walker = hooks ? hooks->ObjectWalker : nullptr;
-        if (!walker || !walker->IsReady())
-            return nullptr;
-
-        auto* object = static_cast<SDK::UObject*>(walker->FindFirstObjectByName(slot.name));
-        if (!object || !object->IsA(cls))
-        {
-            if (!slot.missLogged)
-            {
-                LOG_WARN("DroneLaser: '%s' not found (yet); looking again every %.0f s", slot.name, kCdoRetryInterval);
-                slot.missLogged = true;
-            }
-            return nullptr;
-        }
-
-        slot.ref.Set(object);
-        return object;
-    }
-
     // ---- trace --------------------------------------------------------------
+
+    // The ore actor a traced component belongs to, if the laser mines it:
+    // meteor ores and their chunks only. Crops are ore actors too, and are
+    // left to the player.
+    SDK::AActor* MineableOreActor(SDK::UPrimitiveComponent* comp)
+    {
+        SDK::AActor* owner = comp ? comp->GetOwner() : nullptr;
+        if (owner && (owner->IsA(SDK::ACrMeteOreActor::StaticClass())
+                   || owner->IsA(SDK::ACrStandaloneMeteOreChunk::StaticClass())))
+            return owner;
+        return nullptr;
+    }
 
     // What is under the crosshair within range: an ore actor (meteor ore or
     // a chunk, reached through any of its meshes, weak spots included), or an
@@ -230,26 +285,37 @@ namespace
             false, ignore, SDK::EDrawDebugTrace::None, &hit, true, colour, colour, 0.0f);
 
         Aim aim;
-        SDK::UPrimitiveComponent* comp = (blocked && hit.bBlockingHit) ? hit.Component.Get() : nullptr;
-        if (!comp)
-            return aim;
+        aim.point = (blocked && hit.bBlockingHit) ? hit.ImpactPoint : end;
 
-        // Meteor ores and their chunks only: crops are ore actors too, and
-        // are left to the player.
-        SDK::AActor* owner = comp->GetOwner();
-        if (owner && (owner->IsA(SDK::ACrMeteOreActor::StaticClass())
-                   || owner->IsA(SDK::ACrStandaloneMeteOreChunk::StaticClass())))
+        SDK::UPrimitiveComponent* comp = (blocked && hit.bBlockingHit) ? hit.Component.Get() : nullptr;
+        if (SDK::AActor* ore = MineableOreActor(comp))
         {
             aim.kind = OreKind::Actor;
-            aim.ore  = owner;
+            aim.ore  = ore;
             return aim;
         }
 
-        SDK::UPhysicalMaterial* material = hit.PhysMaterial.Get();
+        SDK::UPhysicalMaterial* material = comp ? hit.PhysMaterial.Get() : nullptr;
         if (material && comp->IsA(SDK::UInstancedStaticMeshComponent::StaticClass()))
         {
             aim.kind = OreKind::Vein;
             aim.vein = material;
+            return aim;
+        }
+
+        // A small ore actor just beside the crosshair. The sphere stops on
+        // the same things the line does, so it cannot reach past a wall.
+        SDK::FHitResult nearHit{};
+        if (SDK::UKismetSystemLibrary::SphereTraceSingle(character, eye, end, kAimAssistRadius, kOreTraceChannel,
+                false, ignore, SDK::EDrawDebugTrace::None, &nearHit, true, colour, colour, 0.0f)
+            && nearHit.bBlockingHit)
+        {
+            if (SDK::AActor* ore = MineableOreActor(nearHit.Component.Get()))
+            {
+                aim.kind  = OreKind::Actor;
+                aim.ore   = ore;
+                aim.point = nearHit.ImpactPoint;
+            }
         }
         return aim;
     }
@@ -290,17 +356,57 @@ namespace
     // Whether the player's ability system carries the mining tool's
     // OverheatTag, the tag the stock tool refuses to fire under. The tag
     // count covers loose and effect-granted tags alike. A pure read; the
-    // laser adds no heat of its own. While the tool actor's defaults are not
+    // laser's own heat is kept apart. While the tool actor's defaults are not
     // loaded there is no tag to check, and the laser is not held back.
-    bool Overheated(SDK::ACrCharacterPlayerBase* character, float deltaSeconds)
+    bool Overheated(SDK::ACrCharacterPlayerBase* character)
     {
         auto* toolActor = static_cast<SDK::ABP_MiningToolActor_C*>(
-            ResolveCdo(g_s.toolActor, SDK::ACrWeaponActor::StaticClass(), deltaSeconds));
+            g_s.toolActor.Resolve(SDK::ACrWeaponActor::StaticClass()));
         SDK::UCrAbilitySystemComponent* abilities = character->AbilitySystem;
         if (!toolActor || !abilities || toolActor->OverheatTag.TagName.IsNone())
             return false;
 
         return abilities->GetGameplayTagCount(toolActor->OverheatTag) > 0;
+    }
+
+    // Cheat.UnlimitedWeaponHeat, the tag the tool's heating effect requires
+    // the player not to carry. Built on the game thread the first time it is
+    // needed; an FName stays valid.
+    SDK::FGameplayTag g_unlimitedHeatTag = {};
+
+    // Whether the tool would heat up at all: false while the player carries
+    // the unlimited heat tag (the game's cheat, and BetterCheats' No
+    // Handheld Drill Overheat). A pure read.
+    bool UnlimitedHeat(SDK::ACrCharacterPlayerBase* character)
+    {
+        if (g_unlimitedHeatTag.TagName.IsNone())
+            g_unlimitedHeatTag.TagName = SDK::BasicFilesImplUtils::StringToName(L"Cheat.UnlimitedWeaponHeat");
+
+        SDK::UCrAbilitySystemComponent* abilities = character ? character->AbilitySystem : nullptr;
+        return abilities && !g_unlimitedHeatTag.TagName.IsNone()
+            && abilities->GetGameplayTagCount(g_unlimitedHeatTag) > 0;
+    }
+
+    // While the drill is the weapon in hand on foot, keeps the fire rate
+    // multiplier its upgrades and buffs give the character, the divisor the
+    // tool's own rate (GetMiningRPM) applies. The drone holds the building
+    // tool, so the laser uses the value last seen with the drill.
+    void SampleDrillMods(SDK::ACrCharacterPlayerBase* character)
+    {
+        if (!character || IsLocalPlayerInDrone())
+            return;
+
+        auto* tool = static_cast<SDK::UCrWeaponItemDataBase*>(
+            g_s.toolData.Resolve(SDK::UCrWeaponItemDataBase::StaticClass()));
+        SDK::UCrWeaponComponent*    weapons    = character->WeaponSystem;
+        SDK::UCrWeaponAttributeSet* attributes = character->WeaponAttributes;
+        if (!tool || !weapons || !attributes || weapons->LastEquippedUnarmed
+            || weapons->EquippedWeapon.ItemDataLoaded != tool)
+            return;
+
+        const float mod = attributes->FireRateModMultiplier.CurrentValue;
+        if (mod > 0.0f && mod < 1000.0f)
+            g_s.drillFireRateMod = mod;
     }
 
     // ---- the bag ---------------------------------------------------------------
@@ -474,8 +580,9 @@ namespace
             LOG_INFO("DroneLaser: stopped mining (%s)", reason);
         }
 
-        g_s.mining = false;
-        g_s.kind   = OreKind::None;
+        g_s.mining      = false;
+        g_s.missSeconds = 0.0f;
+        g_s.kind        = OreKind::None;
         g_s.ore.Reset();
         g_s.vein.Reset();
         g_s.comp.Reset();
@@ -532,11 +639,157 @@ namespace
             damage, interval);
     }
 
+    // ---- heat -------------------------------------------------------------------
+
+    // The heat numbers from the defaults the tool itself heats and cools
+    // by, read as each firing starts so a change is picked up: the heating
+    // effect's period, the stack effect's limit and the passive cooling
+    // ability's delays and rate (BetterCheats' Overheat Cooldown row writes
+    // the rate). Anything out of reason, or not loaded yet, keeps the stock
+    // value. Checked against the native base classes.
+    void ReadHeatNumbers()
+    {
+        auto pick = [](double value, double low, double high, float fallback)
+        {
+            return (value >= low && value <= high) ? static_cast<float>(value) : fallback;
+        };
+
+        if (auto* heating = static_cast<SDK::UGameplayEffect*>(
+                g_s.heatOverTime.Resolve(SDK::UGameplayEffect::StaticClass())))
+        {
+            g_heat.stackSeconds = pick(SDK::UAbilitySystemBlueprintLibrary::Conv_ScalableFloatToFloat(
+                heating->Period, kHeatEffectLevel), 0.01, 60.0, kStockHeatStackSeconds);
+        }
+
+        if (auto* stack = static_cast<SDK::UGameplayEffect*>(
+                g_s.heatStack.Resolve(SDK::UGameplayEffect::StaticClass())))
+        {
+            g_heat.stackLimit = stack->StackLimitCount > 0 ? stack->StackLimitCount : kStockHeatStackLimit;
+        }
+
+        if (auto* cooling = static_cast<SDK::UGA_MiningToolPassiveCooling_C*>(
+                g_s.coolingAbility.Resolve(SDK::UCrGameplayAbility::StaticClass())))
+        {
+            g_heat.stackCoolSeconds  = pick(cooling->SingleStackDuration, 0.01, 600.0, kStockStackCoolSeconds);
+            g_heat.coolDelay         = pick(cooling->DefaultStartDelayDuration, 0.0, 600.0, kStockCoolDelay);
+            g_heat.overheatCoolDelay = pick(cooling->OverheatStartDelayDuration, 0.0, 600.0, kStockOverheatCoolDelay);
+        }
+    }
+
+    // One tick of heat. Firing adds a stack every stackSeconds and holds off
+    // the cooling; the application past the limit overheats, as the stack
+    // effect's overflow does. With unlimited heat, firing still holds off the
+    // cooling but adds nothing. Let go, the heat waits out the delay and then
+    // drains a stack at a time. Returns true on the tick the laser overheats.
+    bool UpdateHeat(Heat& h, bool firing, bool unlimited, float deltaSeconds)
+    {
+        if (firing)
+        {
+            if (!h.firing || unlimited)
+                h.riseClock = 0.0f;
+            h.firing     = true;
+            h.delay      = h.coolDelay;
+            h.drainClock = 0.0f;
+
+            if (unlimited)
+                return false;
+
+            h.riseClock += deltaSeconds;
+            while (h.riseClock >= h.stackSeconds)
+            {
+                h.riseClock -= h.stackSeconds;
+                if (h.stacks < h.stackLimit)
+                {
+                    ++h.stacks;
+                    continue;
+                }
+
+                h.firing     = false;
+                h.riseClock  = 0.0f;
+                h.overheated = true;
+                h.delay      = h.overheatCoolDelay;
+                return true;
+            }
+            return false;
+        }
+
+        h.firing    = false;
+        h.riseClock = 0.0f;
+
+        if (h.delay > 0.0f)
+        {
+            h.delay -= deltaSeconds;
+            if (h.delay > 0.0f)
+                return false;
+            deltaSeconds = -h.delay;
+            h.delay      = 0.0f;
+        }
+
+        if (h.stacks > 0)
+        {
+            h.drainClock += deltaSeconds;
+            while (h.drainClock >= h.stackCoolSeconds && h.stacks > 0)
+            {
+                h.drainClock -= h.stackCoolSeconds;
+                --h.stacks;
+            }
+        }
+
+        if (h.stacks == 0)
+        {
+            h.overheated = false;
+            h.drainClock = 0.0f;
+        }
+        return false;
+    }
+
+    // The heat as a smooth 0..1, for the beam and the ring: the stacks, plus
+    // the part of the next one on its way in or out.
+    float HeatLevel(const Heat& h)
+    {
+        float stacks = static_cast<float>(h.stacks);
+        if (h.firing)
+            stacks += h.riseClock / h.stackSeconds;
+        else if (h.delay <= 0.0f && h.stacks > 0)
+            stacks -= h.drainClock / h.stackCoolSeconds;
+
+        const float level = stacks / static_cast<float>(h.stackLimit);
+        return level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
+    }
+
+    // The ring shows in the drone while there is heat, menus aside.
+    void PublishHeat()
+    {
+        const float level = HeatLevel(g_heat);
+        SDK::ACrCharacterPlayerBase* character = level > 0.0f ? LocalPlayerCharacter() : nullptr;
+        if (!character || !IsLocalPlayerInDrone() || IsGameMenuOpen())
+        {
+            PublishDroneHeat(nullptr);
+            return;
+        }
+
+        DroneHeatRing::View view{};
+        view.heat       = level;
+        view.phase      = g_heat.firing ? DroneHeatRing::Phase::Heating
+                        : g_heat.delay > 0.0f ? DroneHeatRing::Phase::Holding
+                        : DroneHeatRing::Phase::Draining;
+        view.overheated = g_heat.overheated;
+        view.scale      = SDK::UWidgetLayoutLibrary::GetViewportScale(character);
+        if (!(view.scale > 0.0f))
+            view.scale = 1.0f;
+        view.baseColour = PlayerMarkerColour();
+        PublishDroneHeat(&view);
+    }
+
     // ---- the tick -------------------------------------------------------------
 
-    void TickImpl(float deltaSeconds)
+    void TickImpl(Frame& frame, float deltaSeconds)
     {
-        if (!KeyHeld())
+        const bool held    = KeyHeld();
+        const bool pressed = held && !g_s.keyWasHeld;
+        g_s.keyWasHeld = held;
+
+        if (!held)
         {
             StopMining("key released");
             g_s.latched  = false;
@@ -582,6 +835,16 @@ namespace
             return;
         }
 
+        // Locked out until the heat is gone, with the tool's refusal click
+        // for a press, as the tool does.
+        if (g_heat.overheated)
+        {
+            if (pressed)
+                DroneLaserFx::PlayReject(character);
+            StopAndLatch("laser overheated, cooling down");
+            return;
+        }
+
         SDK::UCrMiningComponent* comp = character->MiningComponent;
         if (!comp)
         {
@@ -596,7 +859,7 @@ namespace
             StopMining("character changed");
 
         auto* tool = static_cast<SDK::UCrWeaponItemDataBase*>(
-            ResolveCdo(g_s.toolData, SDK::UCrWeaponItemDataBase::StaticClass(), deltaSeconds));
+            g_s.toolData.Resolve(SDK::UCrWeaponItemDataBase::StaticClass()));
         if (!tool)
         {
             StopMining("mining tool data not loaded");
@@ -604,8 +867,11 @@ namespace
             return;
         }
 
+        // The tool's own rate (GetMiningRPM): the hit interval at level 0,
+        // divided by the drill's fire rate multiplier.
         const float damage   = tool->MiningTypeDamage * DamageMultiplier(character);
-        const float interval = tool->RoundsPerMinute.Value;
+        const float interval = SDK::UAbilitySystemBlueprintLibrary::Conv_ScalableFloatToFloat(tool->RoundsPerMinute, 0.0f)
+                             / g_s.drillFireRateMod;
         const float range    = tool->BaseRange.Value;
         if (!(damage > 0.0f) || !(interval > 0.0f) || !(range > 0.0f))
         {
@@ -614,29 +880,50 @@ namespace
             return;
         }
 
-        if (Overheated(character, deltaSeconds))
+        if (Overheated(character))
         {
+            if (pressed)
+                DroneLaserFx::PlayReject(character);
             StopAndLatch("drill overheated");
             return;
         }
 
-        const Aim aim = TraceAim(character, range);
+        // From here the laser fires: at ore, or into the air like the tool.
+        Aim aim = TraceAim(character, range);
+
+        // The crosshair slipping off the ore actor being mined, for a moment:
+        // it stays the target, and the beam stays where it last hit.
+        if (aim.kind == OreKind::None && g_s.mining && g_s.kind == OreKind::Actor && g_s.ore.Get())
+        {
+            g_s.missSeconds += deltaSeconds;
+            if (g_s.missSeconds < kTargetGraceSeconds)
+            {
+                aim.kind  = OreKind::Actor;
+                aim.ore   = g_s.ore.Get();
+                aim.point = g_s.lastHit;
+            }
+        }
+        else
+        {
+            g_s.missSeconds = 0.0f;
+        }
+
         if (!SameTarget(aim))
         {
             StopMining(aim.kind == OreKind::None ? "target lost or out of range" : "target changed");
             if (aim.kind == OreKind::None)
             {
                 LogGateOnce("no ore in the crosshair within range");
-                return;
             }
-
-            if (!BagHasRoomToStart(character, aim))
+            else if (!BagHasRoomToStart(character, aim))
             {
                 StopAndLatch("inventory full");
                 return;
             }
-
-            StartMining(comp, aim, damage, interval);
+            else
+            {
+                StartMining(comp, aim, damage, interval);
+            }
         }
         else if (g_s.mining && !StillMining(comp))
         {
@@ -647,11 +934,20 @@ namespace
             g_s.kind = aim.kind;
             g_s.ore.Set(aim.ore);
             g_s.vein.Set(aim.vein);
-            return;
         }
 
         if (g_s.mining && !BagHasRoomForNextGrant(character, comp))
+        {
             StopAndLatch("inventory full");
+            return;
+        }
+
+        g_s.lastHit = aim.point;
+
+        frame.character    = character;
+        frame.firing       = true;
+        frame.shot.hit     = aim.point;
+        frame.shot.mining  = g_s.mining;
     }
 }
 
@@ -691,6 +987,8 @@ void InitDroneLaser(IPluginSelf* self)
 
     if (!g_addrGetAmountCanAdd)
         LOG_WARN("DroneLaser: the game's inventory space check was not found -- a full bag will not stop the laser");
+
+    InitDroneHeatDisplay(self);
 }
 
 void RebindDroneLaserKey(IPluginSelf* self, const char* newKeyName)
@@ -704,21 +1002,51 @@ void ShutdownDroneLaser(IPluginSelf* self)
     UnregisterLaserKey(self);
 
     // Shutdown also runs at process exit and, on older loaders, from the
-    // render thread. The mining component is only touched from the game
-    // thread; anywhere else the stop is left to the game.
-    if (g_s.mining && GetCurrentThreadId() != g_gameThreadId.load(std::memory_order_relaxed))
-    {
-        LOG_WARN("DroneLaser: shut down off the game thread while mining; the stop is left to the game");
-        g_s = LaserState{};
-        return;
-    }
+    // render thread. Game objects are only touched from the game thread;
+    // anywhere else mining, beam and loops are left as they are (see
+    // DroneLaserFx::Shutdown).
+    const bool onGameThread = GetCurrentThreadId() == g_gameThreadId.load(std::memory_order_relaxed);
+    DroneLaserFx::Shutdown(onGameThread);
+    ShutdownDroneHeatDisplay(self);
 
-    StopMining("plugin shutdown");
-    g_s = LaserState{};
+    if (g_s.mining && !onGameThread)
+        LOG_WARN("DroneLaser: shut down off the game thread while mining; the stop is left to the game");
+    else
+        StopMining("plugin shutdown");
+
+    g_s    = LaserState{};
+    g_heat = Heat{};
 }
 
 void TickDroneLaser(float deltaSeconds)
 {
     g_gameThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
-    TickImpl(deltaSeconds);
+
+    SampleDrillMods(LocalPlayerCharacter());
+
+    Frame frame;
+    TickImpl(frame, deltaSeconds);
+
+    if (frame.firing && !g_heat.firing)
+        ReadHeatNumbers();
+
+    // Heat runs every tick, in the drone or not, so it cools on foot too.
+    const bool unlimited = frame.firing && UnlimitedHeat(frame.character);
+    if (UpdateHeat(g_heat, frame.firing, unlimited, deltaSeconds))
+    {
+        frame.firing = false;
+        StopAndLatch("laser overheated");
+    }
+
+    if (frame.firing)
+    {
+        frame.shot.heat = HeatLevel(g_heat);
+        DroneLaserFx::Fire(frame.character, frame.shot);
+    }
+    else
+    {
+        DroneLaserFx::Stop();
+    }
+
+    PublishHeat();
 }
