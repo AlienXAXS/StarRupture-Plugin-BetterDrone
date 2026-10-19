@@ -73,7 +73,7 @@ With the range above stock, flying far out can unload the floor under your parke
 
 ### Wave shelter <sup>[✦](#msantoro12)</sup>
 
-You can fly the drone outside during a wave while your character stays safe in the shelter and won't die. Shelter is judged at your character's body, not at the drone, and shelter built or deconstructed around it mid-flight counts at once. With `Always Allow Drone` off the drone still ends in an interior, as in stock. No setting.
+You can fly the drone outside during a wave while your character stays safe in the shelter and won't die. Shelter is judged at your character's body, not at the drone, and shelter built or deconstructed around it mid-flight counts at once. With `Always Allow Drone` off, the stock rule that ends the drone in an interior follows your character too, so flying the drone into one no longer ends it. No setting.
 
 ---
 
