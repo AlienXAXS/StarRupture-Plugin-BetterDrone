@@ -14,6 +14,8 @@ Patches the game's drone developer settings CDO at runtime to apply your configu
 
 Opens with **F10** (rebindable on the loader's Config page, Controls), the **BETTER DRONE** row under OPTIONS in the pause menu, or the **BetterDrone** button under Plugin Tools on the loader's config page. **Esc** or **Q** closes it. Game sessions only.
 
+<img src="images/pause-menu.png" width="360" alt="The pause menu with the MOD LOADER, BETTER CHEATS and BETTER DRONE rows">
+
 <a href="images/panel.png"><img src="images/panel.png" width="480" alt="The BetterDrone panel"></a>
 
 - **Rows:** Drone Speed, Acceleration, Deceleration, Boost Multiplier, Max Radius, Max Height, and a collapsed Audio section (Master, Idle, Movement, Rotation, Station volume; Master sets the rest). Each has a slider, a number box (typed values clamp to the ranges below) and a reset arrow (default; the game's own value for speed, radius and height).
@@ -53,13 +55,13 @@ Fly up to a building, look at it and press the interact key (**E**; rebindable o
 - **Marker:** the drone gets its own, a small targeting reticle in your player-arrow colour (cyan if unreadable) that turns with the drone and keeps its size at any zoom. The game's arrow stays at your parked body. No setting. It hides if the map can't be matched to the game's markers, and stays off until RELOAD after a fault.
 - **Reveal:** `Drone Reveals Map` (off by default) uncovers the map as you fly, at the walking radius and spacing, upgrades included. Saved with your game. Not inside the Forgotten Engine.
 
-<img src="images/map-marker.png" width="480" alt="The drone map marker in four headings">
+<img src="images/map-marker.png" width="480" alt="The drone map marker next to the parked player arrow">
 
 ### Mining from the drone <sup>[✦](#msantoro12)</sup>
 
 Hold **G** (rebindable on the loader's Config page, Controls) while flying to mine the ore under the crosshair: meteor ores, their chunks and infinite ore veins. Range, damage, fire rate, heat, beam and sounds all follow the mining tool; yield goes to your inventory. Host and single player only.
 
-<a href="images/laser-heat-ring.png"><img src="images/laser-heat-ring.png" width="480" alt="The laser heat ring from 25% to overheated"></a>
+<a href="images/laser-heat-ring.png"><img src="images/laser-heat-ring.png" width="480" alt="The mining laser beam on a meteor ore"></a>
 
 - **Stops** on release, a new or lost target, recall, an open menu or death. After a full inventory, press again. After an overheat it stays locked until the heat has drained (about 97 s for the laser).
 - **Aim:** a 25 cm sphere catches small ore beside the crosshair. The target holds 0.35 s through a miss.
