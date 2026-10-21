@@ -170,8 +170,9 @@ namespace
     // caps the slider's pixel width; 0 (the default) uses DefaultSliderMaxWidth.
     //
     // Returns true and fills *outEngineValue when the row changes the value
-    // this frame (drag step, typed edit, or reset) -- the caller should
-    // apply this live (cache + drone), every time. *outCommit is set only
+    // this frame (drag step, typed edit, or reset) or finishes an edit --
+    // the caller should apply this live (cache + drone), every time.
+    // *outEngineValue is filled on every frame. *outCommit is set only
     // when the edit is actually finished (slider/box released after a real
     // change, or the reset button, which is a single click) -- the caller
     // should persist to disk only then, not on every drag step.
@@ -240,12 +241,14 @@ namespace
 
         imgui->PopID();
 
-        if (changed && outEngineValue)
+        // A release can come a frame after the last change, so the value
+        // goes out with the commit too.
+        if (outEngineValue)
             *outEngineValue = value / scale.factor;
         if (outCommit)
             *outCommit = commit;
 
-        return changed;
+        return changed || commit;
     }
 
     // One row per DroneAudio::kVolumeKeys entry, live-applied to the drone
