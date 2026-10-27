@@ -2,14 +2,18 @@
 #include "drone_settings.h"
 #include "drone_config.h"
 #include "drone_audio.h"
+#include "panel_settings.h"
 #include "preset_store.h"
 #include "ui_widgets.h"
+#include "drone_interact.h"
 #include "plugin_helpers.h"
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 
 // preset_store.h declares BetterDrone::PresetStore; alias it down to the
 // bare PresetStore:: used throughout the saved-presets code below.
@@ -18,12 +22,15 @@ namespace PresetStore = BetterDrone::PresetStore;
 static IPluginSelf* s_self = nullptr;
 static PanelHandle s_panelHandle = nullptr;
 static std::atomic<bool> s_menuOpen{ false };
+static std::atomic<bool> s_openRequested{ false };
 static void* g_inputCaptureToken = nullptr;
 static char g_registeredToggleKey[64] = {};
 
 namespace
 {
-    constexpr float kActiveEpsilon = 0.0001f;
+    using PanelSettings::kActiveEpsilon;
+    using DroneConfig::PanelFloat;
+
     constexpr int   kTableFlags = (1 << 6) | (1 << 9) | (3 << 13);
 
     // Mirrors drone_config.cpp's GetModuleDirectory: resolved via this
@@ -121,6 +128,10 @@ namespace
         { "%.0f cm", 1.0f,       500.0f, 2500.0f, 0.0f, 500000.0f },
     };
 
+    // The drone's collision radius is small enough to read in cm whichever
+    // speed unit is on display.
+    constexpr FieldUnitScale kSphereScale = { "%.0f cm", 1.0f, 1.0f, 5.0f, 20.0f, 50.0f };
+
     constexpr FieldUnitScale kBoostScale = { "%.1fx", 1.0f, 0.5f, 1.0f, 1.0f, 10.0f };
 
     // Volume is already a plain 0..1 fraction, so RenderScaledRow's engine
@@ -159,8 +170,9 @@ namespace
     // caps the slider's pixel width; 0 (the default) uses DefaultSliderMaxWidth.
     //
     // Returns true and fills *outEngineValue when the row changes the value
-    // this frame (drag step, typed edit, or reset) -- the caller should
-    // apply this live (cache + drone), every time. *outCommit is set only
+    // this frame (drag step, typed edit, or reset) or finishes an edit --
+    // the caller should apply this live (cache + drone), every time.
+    // *outEngineValue is filled on every frame. *outCommit is set only
     // when the edit is actually finished (slider/box released after a real
     // change, or the reset button, which is a single click) -- the caller
     // should persist to disk only then, not on every drag step.
@@ -229,69 +241,32 @@ namespace
 
         imgui->PopID();
 
-        if (changed && outEngineValue)
+        // A release can come a frame after the last change, so the value
+        // goes out with the commit too.
+        if (outEngineValue)
             *outEngineValue = value / scale.factor;
         if (outCommit)
             *outCommit = commit;
 
-        return changed;
-    }
-
-    float DeriveMasterVolume()
-    {
-        float vols[DroneAudio::kVolCount];
-        for (int i = 0; i < DroneAudio::kVolCount; ++i)
-            vols[i] = DroneConfig::Config::ReadAudioVolume(DroneAudio::kVolumeKeys[i]);
-
-        float maxV = vols[0];
-        bool allEqual = true;
-        for (int i = 0; i < DroneAudio::kVolCount; ++i)
-        {
-            if (std::fabs(vols[i] - vols[0]) > kActiveEpsilon) allEqual = false;
-            if (vols[i] > maxV) maxV = vols[i];
-        }
-
-        return allEqual ? vols[0] : maxV;
-    }
-
-    // Updates the drone's live audio immediately (an atomic store, same as
-    // a single row's own drag path) and the cache the rows below read from,
-    // so they visibly track a master drag; does not touch BetterDrone-Panel.ini.
-    void ApplyMasterVolumeLive(float value)
-    {
-        for (const char* key : DroneAudio::kVolumeKeys)
-        {
-            DroneConfig::Config::SetAudioVolumeLive(key, value);
-            DroneAudio::SetVolume(key, value);
-        }
-    }
-
-    // Persists all four volumes to BetterDrone-Panel.ini. Called once the
-    // edit is done, not on every drag step; ApplyMasterVolumeLive already
-    // updated the cache each of those already wrote to.
-    void PersistMasterVolume()
-    {
-        for (const char* key : DroneAudio::kVolumeKeys)
-            DroneConfig::Config::PersistAudioVolume(key);
+        return changed || commit;
     }
 
     // One row per DroneAudio::kVolumeKeys entry, live-applied to the drone
-    // and cached the same way the master row above updates them.
+    // and cached the same way the master row below updates them.
     void RenderVolumeRow(IModLoaderImGui* ui, int index)
     {
-        const char* key = DroneAudio::kVolumeKeys[index];
+        const PanelFloat id = DroneConfig::AudioVolumeId(index);
         char rowId[24];
         snprintf(rowId, sizeof(rowId), "##vol_%d", index);
 
         float newValue = 0.0f;
         bool  commit    = false;
         if (RenderScaledRow(ui, rowId, kVolRows[index].label, kVolRows[index].tooltip,
-                             DroneConfig::Config::ReadAudioVolume(key), 1.0f, kMasterVolumeScale, &newValue, &commit))
+                             DroneConfig::Config::ReadPanel(id), 1.0f, kMasterVolumeScale, &newValue, &commit))
         {
-            DroneConfig::Config::SetAudioVolumeLive(key, newValue);
-            DroneAudio::SetVolume(key, newValue);
+            PanelSettings::SetLive(id, newValue);
             if (commit)
-                DroneConfig::Config::PersistAudioVolume(key);
+                PanelSettings::Commit(id);
         }
     }
 
@@ -317,13 +292,13 @@ namespace
         bool  commit   = false;
         if (RenderScaledRow(ui, "##master_vol", "Master Volume",
                              "Sets all four drone audio volumes below together.",
-                             DeriveMasterVolume(), 1.0f, kMasterVolumeScale, &newValue, &commit))
+                             PanelSettings::MasterVolume(), 1.0f, kMasterVolumeScale, &newValue, &commit))
         {
             if (newValue < 0.0f) newValue = 0.0f;
             if (newValue > 1.0f) newValue = 1.0f;
-            ApplyMasterVolumeLive(newValue);
+            PanelSettings::SetMasterVolumeLive(newValue);
             if (commit)
-                PersistMasterVolume();
+                PanelSettings::CommitMasterVolume();
         }
 
         for (int i = 0; i < DroneAudio::kVolCount; ++i)
@@ -332,84 +307,6 @@ namespace
         ui->EndTable();
     }
 }
-
-// Speed and range used to come as one bundled preset; split so either axis
-// can be picked independently (e.g. Better Construction speed with a
-// Map-wide range).
-struct SpeedPreset
-{
-    const char* label;
-    const char* tooltip;
-    const char* credit;
-    float speedPerSec;
-    float boostMultiplier;
-    float acceleration;
-    float deceleration;
-};
-
-struct RangePreset
-{
-    const char* label;
-    const char* tooltip;
-    const char* credit;
-    float maxRadius;
-    float maxHeight;
-};
-
-static const SpeedPreset k_speedPresets[] = {
-    { "Stock",
-      "Default un-modded StarRupture building drone speed.",
-      "Game Default",
-      // 4000.0f matches DroneConfig's own accel/decel floor (drone_config.cpp,
-      // kMinAccelDecel) rather than 0, which no longer means instant.
-      1000.0f, 2.0f, 4000.0f, 4000.0f },
-
-    { "Better Construction",
-      "Modelled on 'Better Construction Drone' by CrazyCovin -- 2.5x speed & fast acceleration.",
-      "Modelled on NexusMod #27 by CrazyCovin",
-      2500.0f, 2.5f, 5000.0f, 5000.0f },
-
-    { "Agile Builder",
-      "High speed and rapid response for mega-base building.",
-      nullptr,
-      4000.0f, 3.0f, 10000.0f, 10000.0f },
-
-    { "Ludicrous Speed",
-      "Supercharged drone: ultra-fast travel and heavy boost multiplier.",
-      nullptr,
-      8000.0f, 4.0f, 20000.0f, 20000.0f },
-
-    { "Long Haul",
-      "Moderate speed and boost for long-range trips -- pair with the Map-wide range preset below for full planet coverage.",
-      nullptr,
-      5000.0f, 3.0f, 12000.0f, 12000.0f }
-};
-constexpr int k_speedPresetCount = static_cast<int>(sizeof(k_speedPresets) / sizeof(k_speedPresets[0]));
-
-// Every entry stays within kMaxRadiusBound/kMaxHeightBound (drone_config.cpp);
-// Map-wide sits exactly at that ceiling.
-static const RangePreset k_rangePresets[] = {
-    { "Stock",
-      "Default un-modded StarRupture building drone range.",
-      "Game Default",
-      5000.0f, 2000.0f },
-
-    { "Better Construction",
-      "Modelled on 'Better Construction Drone' by CrazyCovin -- double range.",
-      "Modelled on NexusMod #27 by CrazyCovin",
-      10000.0f, 5000.0f },
-
-    { "Agile Builder",
-      "Expanded flight envelope for mega-base building.",
-      nullptr,
-      20000.0f, 10000.0f },
-
-    { "Map-wide",
-      "Build anywhere across the planet -- the same ceiling as NexusMod #27's 'Unlimited'.",
-      "Modelled on NexusMod #27 by CrazyCovin",
-      1000000.0f, 500000.0f }
-};
-constexpr int k_rangePresetCount = static_cast<int>(sizeof(k_rangePresets) / sizeof(k_rangePresets[0]));
 
 static void OnToggleKeyPressed(EModKey, EModKeyEvent event)
 {
@@ -453,6 +350,14 @@ static void OnPanelClosed(PanelHandle handle)
     ApplyMenuClosed("OnPanelClosed");
 }
 
+// The BETTER DRONE row in the pause menu. onClick runs on the game thread
+// inside the menu's click handler, so it only raises a flag; the panel is
+// opened by TickDroneMenuOpen on the next tick.
+static void OnPauseMenuRowClicked(void*)
+{
+    s_openRequested.store(true, std::memory_order_relaxed);
+}
+
 void InitDroneUI(IPluginSelf* self)
 {
     s_self = self;
@@ -470,6 +375,22 @@ void InitDroneUI(IPluginSelf* self)
     s_panelHandle = self->hooks->UI->RegisterPanel(&desc);
     self->hooks->UI->RegisterOnPanelWindowClosed(OnPanelClosed);
 
+    // Server builds have no game menu (hooks->GameMenu is null), and a
+    // client whose menu patterns did not resolve is not worth a row nobody
+    // will see; the toggle key still opens the panel either way.
+    if (self->hooks->GameMenu && self->hooks->GameMenu->IsAvailable())
+    {
+        PluginGameMenuEntryDesc row{};
+        row.id      = "betterdrone";
+        row.label   = "BETTER DRONE";
+        row.targets = PLUGIN_GAME_MENU_PAUSE;
+        row.anchor  = PLUGIN_GAME_MENU_ANCHOR_AFTER_OPTIONS;
+        row.onClick = OnPauseMenuRowClicked;
+
+        if (!self->hooks->GameMenu->AddEntry(self, &row))
+            LOG_WARN("InitDroneUI: could not add the pause menu row");
+    }
+
     if (self->hooks->Input)
     {
         self->hooks->Input->RegisterKeybind(EModKey::Escape, EModKeyEvent::Pressed, OnCloseKeyPressed);
@@ -483,6 +404,9 @@ void ShutdownDroneUI(IPluginSelf*)
 {
     if (s_self && s_self->hooks)
     {
+        if (s_self->hooks->GameMenu)
+            s_self->hooks->GameMenu->RemoveAllEntries(s_self);
+
         if (s_self->hooks->Input)
         {
             s_self->hooks->Input->UnregisterKeybind(EModKey::Escape, EModKeyEvent::Pressed, OnCloseKeyPressed);
@@ -505,6 +429,7 @@ void ShutdownDroneUI(IPluginSelf*)
         }
     }
     s_self = nullptr;
+    s_openRequested.store(false, std::memory_order_relaxed);
     s_menuOpen.store(false, std::memory_order_relaxed);
 }
 
@@ -593,30 +518,21 @@ void TickDroneMenuClose()
     }
 }
 
-static void ApplySpeedPreset(const SpeedPreset& preset)
+// Applies a pending request from the pause menu row. Opens (never toggles),
+// so a click while the panel is already up, or an F10 press in between, can
+// not close it.
+void TickDroneMenuOpen()
 {
-    if (!g_drone.valid) return;
-
-    DroneConfig::Config::WriteSpeedPerSec(preset.speedPerSec);
-    DroneConfig::Config::WriteBoostMultiplier(preset.boostMultiplier);
-    DroneConfig::Config::WriteAcceleration(preset.acceleration);
-    DroneConfig::Config::WriteDeceleration(preset.deceleration);
-}
-
-static void ApplyRangePreset(const RangePreset& preset)
-{
-    if (!g_drone.valid) return;
-
-    const float radius = DroneConfig::Config::WriteMaxRadius(preset.maxRadius);
-    const float height = DroneConfig::Config::WriteMaxHeight(preset.maxHeight);
-
-    RequestMaxRadius(radius);
-    RequestMaxHeight(height);
+    if (s_openRequested.exchange(false, std::memory_order_relaxed))
+    {
+        LOG_DEBUG("TickDroneMenuOpen: opening from the pause menu row");
+        OpenDroneMenu();
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Saved presets (PresetStore-backed) -- the player's own tweaks, named and
-// kept apart from the built-in arrays above. Per group: a live-fields
+// kept apart from the built-in tables in panel_settings.h. Per group: a live-fields
 // getter (for Save), an apply function (for picking one from the dropdown),
 // a built-in-name check (so a saved preset can never collide with, rename
 // onto, or shadow a built-in), and a suggested-base-name computer (the
@@ -637,40 +553,33 @@ static void GetLiveSpeedFields(PresetStore::Field* out)
 
 static void ApplySpeedFields(const PresetStore::Field* fields, int count)
 {
-    if (count > 0) DroneConfig::Config::WriteSpeedPerSec(fields[0].value);
-    if (count > 1) DroneConfig::Config::WriteBoostMultiplier(fields[1].value);
-    if (count > 2) DroneConfig::Config::WriteAcceleration(fields[2].value);
-    if (count > 3) DroneConfig::Config::WriteDeceleration(fields[3].value);
+    float speed = DroneConfig::Config::ReadSpeedPerSec();
+    float boost = DroneConfig::Config::ReadBoostMultiplier();
+    float accel = DroneConfig::Config::ReadAcceleration();
+    float decel = DroneConfig::Config::ReadDeceleration();
+    if (count > 0) speed = fields[0].value;
+    if (count > 1) boost = fields[1].value;
+    if (count > 2) accel = fields[2].value;
+    if (count > 3) decel = fields[3].value;
+
+    PanelSettings::ApplySpeed(speed, boost, accel, decel);
 }
 
 static bool IsBuiltinSpeedName(const char* name)
 {
-    for (int i = 0; i < k_speedPresetCount; ++i)
-        if (strcmp(k_speedPresets[i].label, name) == 0)
+    for (const PanelSettings::SpeedPreset& preset : PanelSettings::kSpeedPresets)
+        if (strcmp(preset.label, name) == 0)
             return true;
     return false;
 }
 
 static void ComputeSpeedSuggestedBase(char* out, int cap)
 {
-    const float speed = DroneConfig::Config::ReadSpeedPerSec();
-    const float boost = DroneConfig::Config::ReadBoostMultiplier();
-    const float accel = DroneConfig::Config::ReadAcceleration();
-    const float decel = DroneConfig::Config::ReadDeceleration();
-
-    for (int i = 0; i < k_speedPresetCount; ++i)
-    {
-        const auto& p = k_speedPresets[i];
-        if (std::fabs(speed - p.speedPerSec) <= kActiveEpsilon &&
-            std::fabs(boost - p.boostMultiplier) <= kActiveEpsilon &&
-            std::fabs(accel - p.acceleration) <= kActiveEpsilon &&
-            std::fabs(decel - p.deceleration) <= kActiveEpsilon)
-        {
-            snprintf(out, cap, "%s Custom", p.label);
-            return;
-        }
-    }
-    snprintf(out, cap, "Custom");
+    const int match = PanelSettings::MatchingSpeedPreset();
+    if (match >= 0)
+        snprintf(out, cap, "%s Custom", PanelSettings::kSpeedPresets[match].label);
+    else
+        snprintf(out, cap, "Custom");
 }
 
 constexpr const char* kRangeGroup = "Range";
@@ -689,36 +598,24 @@ static void ApplyRangeFields(const PresetStore::Field* fields, int count)
     if (count > 0) radius = fields[0].value;
     if (count > 1) height = fields[1].value;
 
-    radius = DroneConfig::Config::WriteMaxRadius(radius);
-    height = DroneConfig::Config::WriteMaxHeight(height);
-    RequestMaxRadius(radius);
-    RequestMaxHeight(height);
+    PanelSettings::ApplyRange(radius, height);
 }
 
 static bool IsBuiltinRangeName(const char* name)
 {
-    for (int i = 0; i < k_rangePresetCount; ++i)
-        if (strcmp(k_rangePresets[i].label, name) == 0)
+    for (const PanelSettings::RangePreset& preset : PanelSettings::kRangePresets)
+        if (strcmp(preset.label, name) == 0)
             return true;
     return false;
 }
 
 static void ComputeRangeSuggestedBase(char* out, int cap)
 {
-    const float radius = DroneConfig::Config::ReadMaxRadius();
-    const float height = DroneConfig::Config::ReadMaxHeight();
-
-    for (int i = 0; i < k_rangePresetCount; ++i)
-    {
-        const auto& p = k_rangePresets[i];
-        if (std::fabs(radius - p.maxRadius) <= kActiveEpsilon &&
-            std::fabs(height - p.maxHeight) <= kActiveEpsilon)
-        {
-            snprintf(out, cap, "%s Custom", p.label);
-            return;
-        }
-    }
-    snprintf(out, cap, "Custom");
+    const int match = PanelSettings::MatchingRangePreset();
+    if (match >= 0)
+        snprintf(out, cap, "%s Custom", PanelSettings::kRangePresets[match].label);
+    else
+        snprintf(out, cap, "Custom");
 }
 
 // Persists across frames per group: which saved preset is selected, and
@@ -739,6 +636,30 @@ using ApplyFieldsFn    = void (*)(const PresetStore::Field* fields, int count);
 using IsBuiltinNameFn  = bool (*)(const char* name);
 using ComputeSuggestFn = void (*)(char* out, int cap);
 
+// The most saved presets a group's dropdown lists, and the preset hotkeys
+// step through.
+constexpr int kMaxSavedPresetsListed = 16;
+
+// Guards PresetStore and the saved-preset row state. The store is not
+// internally synchronized: the panel (render thread) and the preset
+// hotkeys (game tick) both go through it, so each takes this first.
+static std::mutex s_savedPresetsMutex;
+
+// Loads the stored preset `name` over the live values and applies it, the
+// one body behind picking a saved preset in the dropdown and stepping to
+// one with a hotkey. Returns false if the preset is gone.
+static bool ApplySavedPreset(const char* group, const char* name,
+                             PresetStore::Field* fields, int fieldCount,
+                             GetLiveFieldsFn getLive, ApplyFieldsFn apply)
+{
+    getLive(fields); // seed so a key missing from this preset stays unchanged
+    if (!PresetStore::Load(group, name, fields, fieldCount))
+        return false;
+
+    apply(fields, fieldCount);
+    return true;
+}
+
 // A dropdown of the group's saved presets plus Save/Rename/Delete, in
 // addition to (not replacing) the built-in preset buttons above it. Save
 // never prompts -- it computes the suggested name itself and selects the
@@ -749,10 +670,12 @@ static void RenderSavedPresetsRow(IModLoaderImGui* ui, const char* idScope, cons
                             IsBuiltinNameFn isBuiltin, ComputeSuggestFn computeSuggest,
                             PresetRowState& state)
 {
+    std::lock_guard<std::mutex> lock(s_savedPresetsMutex);
+
     ui->PushIDStr(idScope);
 
-    char names[16][PresetStore::kMaxNameLen];
-    const int count = PresetStore::ListNames(group, names, 16);
+    char names[kMaxSavedPresetsListed][PresetStore::kMaxNameLen];
+    const int count = PresetStore::ListNames(group, names, kMaxSavedPresetsListed);
 
     bool selectedStillValid = false;
     for (int i = 0; i < count; ++i)
@@ -775,9 +698,7 @@ static void RenderSavedPresetsRow(IModLoaderImGui* ui, const char* idScope, cons
             if (ui->Selectable(names[i], isSelected))
             {
                 snprintf(state.selected, sizeof(state.selected), "%s", names[i]);
-                getLive(fields); // seed so a key missing from this preset stays unchanged
-                if (PresetStore::Load(group, state.selected, fields, fieldCount))
-                    apply(fields, fieldCount);
+                ApplySavedPreset(group, state.selected, fields, fieldCount, getLive, apply);
             }
         }
         ui->EndCombo();
@@ -879,6 +800,321 @@ static void RenderSavedPresetsRow(IModLoaderImGui* ui, const char* idScope, cons
     ui->PopID();
 }
 
+// ---------------------------------------------------------------------------
+// Speed preset hotkeys. "Previous Preset Key" and "Next Preset Key" step
+// through every speed preset the panel offers (the built-in buttons and the
+// saved dropdown), slowest to fastest, while the drone is out. The keybind
+// callbacks only raise a flag; the step is applied from the game tick.
+//
+// The tick reads PresetStore, which the panel also uses from the render
+// thread, so s_savedPresetsMutex covers every PresetStore call on both
+// sides. It is held only while the dial is built and chosen from, never
+// across the settings writes that apply a stop.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // One stop on the speed dial.
+    struct SpeedStop
+    {
+        char                       name[PresetStore::kMaxNameLen];
+        bool                       saved;
+        PanelSettings::SpeedValues values;
+    };
+
+    constexpr int       kMaxSpeedStops = PanelSettings::kSpeedPresetCount + kMaxSavedPresetsListed;
+    constexpr ULONGLONG kToastMs       = 1500;
+
+    // Raised by the keybind callbacks, consumed on the game tick.
+    std::atomic<bool> s_stepSlower{ false };
+    std::atomic<bool> s_stepFaster{ false };
+
+    char s_prevPresetKeyName[64] = {};
+    char s_nextPresetKeyName[64] = {};
+
+    void OnPrevPresetKey(EModKey, EModKeyEvent) { s_stepSlower.store(true, std::memory_order_relaxed); }
+    void OnNextPresetKey(EModKey, EModKeyEvent) { s_stepFaster.store(true, std::memory_order_relaxed); }
+
+    // Every preset the panel offers, built-ins in button order then saved in
+    // dropdown order, sorted slowest to fastest. The sort is stable, so equal
+    // speeds keep that panel order. A preset that repeats an earlier one's
+    // values is left out, so a saved copy of a built-in is not a dead stop.
+    // Caller holds s_savedPresetsMutex.
+    int CollectSpeedStops(SpeedStop* stops)
+    {
+        int count = 0;
+        auto add = [&](const char* name, bool saved, PanelSettings::SpeedValues values)
+        {
+            values.speedPerSec = (std::min)(values.speedPerSec, DroneConfig::Config::MaxSpeedPerSec());
+            for (int i = 0; i < count; ++i)
+                if (PanelSettings::SpeedValuesEqual(stops[i].values, values))
+                    return;
+
+            SpeedStop& stop = stops[count++];
+            snprintf(stop.name, sizeof(stop.name), "%s", name);
+            stop.saved  = saved;
+            stop.values = values;
+        };
+
+        for (const PanelSettings::SpeedPreset& p : PanelSettings::kSpeedPresets)
+            add(p.label, false, PanelSettings::SpeedValuesOf(p));
+
+        char names[kMaxSavedPresetsListed][PresetStore::kMaxNameLen];
+        const int savedCount = PresetStore::ListNames(kSpeedGroup, names, kMaxSavedPresetsListed);
+        for (int i = 0; i < savedCount; ++i)
+        {
+            PresetStore::Field fields[kSpeedFieldCount];
+            GetLiveSpeedFields(fields); // a key missing from the preset keeps the live value
+            if (!PresetStore::Load(kSpeedGroup, names[i], fields, kSpeedFieldCount))
+                continue;
+
+            add(names[i], true, { fields[0].value, fields[1].value, fields[2].value, fields[3].value });
+        }
+
+        std::stable_sort(stops, stops + count, [](const SpeedStop& a, const SpeedStop& b)
+                         { return a.values.speedPerSec < b.values.speedPerSec; });
+        return count;
+    }
+
+    // The toast's text. Written on the game tick, read by the widget's render
+    // callback, so both take the lock. The speed is shown in the panel's unit.
+    struct PresetToast
+    {
+        std::mutex mutex;
+        char       name[PresetStore::kMaxNameLen] = {};
+        float      speedPerSec = 0.0f;
+        float      boostSpeedPerSec = 0.0f;
+    };
+    PresetToast g_presetToast;
+
+    // The widget handle and whether it is up. Atomic because shutdown can
+    // run off the game thread on a loader older than 1.22.0.
+    std::atomic<WidgetHandle> s_toastWidget{ nullptr };
+    std::atomic<bool>         s_toastShown{ false };
+    ULONGLONG                 s_toastHideAt = 0; // game thread only
+
+    // ImGui window flags with no PluginWindowFlags_* macro; the values mirror
+    // ImGuiWindowFlags like the macros do.
+    constexpr int kWindowFlagAlwaysAutoResize = 1 << 6;
+
+    // A small borderless box that sizes to its text and takes no input,
+    // pinned to the top-right corner of the display: position (display
+    // width, 0) with pivot (1, 0), "always" so it holds if the window is
+    // resized. The position stays unset (-1) until RenderPresetToast has
+    // read the display size, which only the render callback can ask the
+    // loader for; the hints are read and written on the render thread only.
+    PluginWindowHints s_toastHints = {
+        0.0f, 0.0f, -1.0f, -1.0f, 1.0f, 0.0f, 0, 0,
+        PluginWindowFlags_NoTitleBar | PluginWindowFlags_NoResize | PluginWindowFlags_NoMove |
+        PluginWindowFlags_NoScrollbar | PluginWindowFlags_NoSavedSettings |
+        PluginWindowFlags_NoMouseInputs | kWindowFlagAlwaysAutoResize
+    };
+
+    void RenderPresetToast(IModLoaderImGui* ui)
+    {
+        // The loader reads the hints before this callback, so a new size
+        // lands on the next frame; the window is not drawn on its first
+        // frame anyway (ImGui sizes a new auto-fit window unseen).
+        float displayW = 0.0f, displayH = 0.0f;
+        ui->GetDisplaySize(&displayW, &displayH);
+        s_toastHints.pos_x = displayW;
+        s_toastHints.pos_y = 0.0f;
+
+        char  name[PresetStore::kMaxNameLen];
+        float speedPerSec;
+        float boostSpeedPerSec;
+        {
+            std::lock_guard<std::mutex> lock(g_presetToast.mutex);
+            snprintf(name, sizeof(name), "%s", g_presetToast.name);
+            speedPerSec      = g_presetToast.speedPerSec;
+            boostSpeedPerSec = g_presetToast.boostSpeedPerSec;
+        }
+        if (!name[0])
+            return;
+
+        char unit[16] = {};
+        DroneConfig::Config::ReadSpeedUnit(unit, sizeof(unit));
+        const FieldUnitScale& scale = kSpeedScale[SelectUnitIndex(unit)];
+
+        char speedText[40];
+        snprintf(speedText, sizeof(speedText), scale.format, speedPerSec * scale.factor);
+
+        char boostFormat[48];
+        snprintf(boostFormat, sizeof(boostFormat), "Boost %s", scale.format);
+        char boostText[56];
+        snprintf(boostText, sizeof(boostText), boostFormat, boostSpeedPerSec * scale.factor);
+
+        ui->Text(name);
+        ui->Text(speedText);
+        ui->Text(boostText);
+    }
+
+    // Game thread only. Shows `name` with the speed now in effect, and keeps
+    // it up for kToastMs from this call.
+    void ShowPresetToast(const char* name)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_presetToast.mutex);
+            snprintf(g_presetToast.name, sizeof(g_presetToast.name), "%s", name);
+            g_presetToast.speedPerSec = DroneConfig::Config::ReadSpeedPerSec();
+
+            // What the drone reaches with the boost key held, capped the
+            // way OnDroneTick caps it.
+            g_presetToast.boostSpeedPerSec = (std::min)(
+                g_presetToast.speedPerSec * DroneConfig::Config::ReadBoostMultiplier(),
+                DroneConfig::Config::MaxSpeedPerSec());
+        }
+
+        s_toastHideAt = GetTickCount64() + kToastMs;
+        WidgetHandle widget = s_toastWidget.load();
+        if (widget && s_self && s_self->hooks->UI && !s_toastShown.exchange(true))
+            s_self->hooks->UI->SetWidgetVisible(widget, true);
+    }
+
+    // Moves one stop along the dial: direction -1 is slower, +1 is faster.
+    // Clamps at the ends. A speed that sits on no preset (the sliders were
+    // used) steps to the nearest preset in that direction.
+    void StepSpeedPreset(int direction)
+    {
+        // Same guard as the panel's built-in buttons: nothing to apply to
+        // until the drone settings CDO is found, and no toast for a no-op.
+        if (!g_drone.valid)
+            return;
+
+        bool      apply  = false;
+        SpeedStop target = {};
+        char      shownName[PresetStore::kMaxNameLen] = {};
+        {
+            std::lock_guard<std::mutex> lock(s_savedPresetsMutex);
+
+            SpeedStop stops[kMaxSpeedStops];
+            const int count = CollectSpeedStops(stops);
+
+            PresetStore::Field liveFields[kSpeedFieldCount];
+            GetLiveSpeedFields(liveFields);
+            const PanelSettings::SpeedValues live = {
+                liveFields[0].value, liveFields[1].value, liveFields[2].value, liveFields[3].value };
+
+            int current = -1;
+            for (int i = 0; i < count; ++i)
+            {
+                if (PanelSettings::SpeedValuesEqual(stops[i].values, live))
+                {
+                    current = i;
+                    break;
+                }
+            }
+
+            int next = -1;
+            if (current >= 0)
+            {
+                const int step = current + direction;
+                if (step >= 0 && step < count)
+                    next = step;
+            }
+            else if (direction > 0)
+            {
+                for (int i = 0; i < count && next < 0; ++i)
+                    if (stops[i].values.speedPerSec > live.speedPerSec + PanelSettings::kActiveEpsilon)
+                        next = i;
+            }
+            else
+            {
+                for (int i = count - 1; i >= 0 && next < 0; --i)
+                    if (stops[i].values.speedPerSec < live.speedPerSec - PanelSettings::kActiveEpsilon)
+                        next = i;
+            }
+
+            const int shown = next >= 0 ? next : current;
+            snprintf(shownName, sizeof(shownName), "%s", shown >= 0 ? stops[shown].name : "Custom");
+
+            if (next >= 0)
+            {
+                apply  = true;
+                target = stops[next];
+
+                // Point the saved dropdown at it, as picking it there would.
+                if (target.saved)
+                    snprintf(s_speedPresetRow.selected, sizeof(s_speedPresetRow.selected), "%s", target.name);
+            }
+        }
+
+        // The panel's own applier, outside the lock: it writes the INI.
+        if (apply)
+            PanelSettings::ApplySpeed(target.values.speedPerSec, target.values.boostMultiplier,
+                                      target.values.acceleration, target.values.deceleration);
+
+        ShowPresetToast(shownName);
+        LOG_DEBUG("StepSpeedPreset: %s -> %s", direction > 0 ? "faster" : "slower", shownName);
+    }
+}
+
+void InitDronePresetKeys(IPluginSelf* self)
+{
+    if (!self || !self->hooks)
+        return;
+
+    if (self->hooks->UI)
+    {
+        static const PluginWidgetDesc desc = { "BetterDrone Preset", &RenderPresetToast, &s_toastHints };
+        WidgetHandle widget = self->hooks->UI->RegisterWidget(&desc);
+        if (widget)
+            self->hooks->UI->SetWidgetVisible(widget, false);
+        s_toastWidget.store(widget);
+    }
+
+    if (self->hooks->Input)
+    {
+        DroneConfig::Config::ReadPrevPresetKey(s_prevPresetKeyName, sizeof(s_prevPresetKeyName));
+        DroneConfig::Config::ReadNextPresetKey(s_nextPresetKeyName, sizeof(s_nextPresetKeyName));
+        self->hooks->Input->RegisterKeybindByName(s_prevPresetKeyName, EModKeyEvent::Pressed, &OnPrevPresetKey);
+        self->hooks->Input->RegisterKeybindByName(s_nextPresetKeyName, EModKeyEvent::Pressed, &OnNextPresetKey);
+    }
+}
+
+void ShutdownDronePresetKeys(IPluginSelf* self)
+{
+    // Taken out first, so a tick still running cannot reach the widget.
+    WidgetHandle widget = s_toastWidget.exchange(nullptr);
+    s_toastShown.store(false);
+    s_stepSlower.store(false, std::memory_order_relaxed);
+    s_stepFaster.store(false, std::memory_order_relaxed);
+
+    if (!self || !self->hooks)
+        return;
+
+    if (self->hooks->Input)
+    {
+        self->hooks->Input->UnregisterKeybindByName(s_prevPresetKeyName, EModKeyEvent::Pressed, &OnPrevPresetKey);
+        self->hooks->Input->UnregisterKeybindByName(s_nextPresetKeyName, EModKeyEvent::Pressed, &OnNextPresetKey);
+    }
+
+    if (widget && self->hooks->UI)
+        self->hooks->UI->UnregisterWidget(widget);
+}
+
+void TickDronePresetKeys()
+{
+    const bool slower = s_stepSlower.exchange(false, std::memory_order_relaxed);
+    const bool faster = s_stepFaster.exchange(false, std::memory_order_relaxed);
+
+    // On foot, in a game menu or with the panel up, a press is simply dropped.
+    if ((slower || faster) &&
+        IsLocalPlayerInDrone() && !IsGameMenuOpen() && !s_menuOpen.load(std::memory_order_relaxed))
+    {
+        if (slower) StepSpeedPreset(-1);
+        if (faster) StepSpeedPreset(+1);
+    }
+
+    if (s_toastShown.load() && GetTickCount64() >= s_toastHideAt)
+    {
+        WidgetHandle widget = s_toastWidget.load();
+        s_toastShown.store(false);
+        if (widget && s_self && s_self->hooks->UI)
+            s_self->hooks->UI->SetWidgetVisible(widget, false);
+    }
+}
+
 static void RenderUnavailableMessage(IModLoaderImGui* imgui, float avail_x, float avail_y, const char* message)
 {
     float text_x = 0.0f, text_y = 0.0f;
@@ -920,23 +1156,24 @@ void RenderDronePanel(IModLoaderImGui* ui)
     // Construction, Agile Builder) in the same window -- ImGui derives a
     // widget's ID from its label, so the two loops would otherwise collide.
     ui->PushIDStr("speed_presets");
-    for (int i = 0; i < k_speedPresetCount; ++i)
+    for (int i = 0; i < PanelSettings::kSpeedPresetCount; ++i)
     {
-        const auto& preset = k_speedPresets[i];
+        const auto& preset = PanelSettings::kSpeedPresets[i];
         if (i > 0) ui->SameLine(0.0f, -1.0f);
 
         if (ui->SmallButton(preset.label))
         {
-            ApplySpeedPreset(preset);
+            PanelSettings::ApplySpeedPreset(preset);
         }
         if (ui->IsItemHovered())
         {
+            const PanelSettings::SpeedValues v = PanelSettings::SpeedValuesOf(preset);
             char tooltipBuf[320];
-            float kmh = preset.speedPerSec * 0.036f;
-            float mph = preset.speedPerSec * 0.0223693629f;
+            float kmh = v.speedPerSec * 0.036f;
+            float mph = v.speedPerSec * 0.0223693629f;
             snprintf(tooltipBuf, sizeof(tooltipBuf),
                 "%s\n\nSpeed: %.1f km/h (%.1f mph | %.0f cm/s) | Boost: %.1fx | Accel: %.0f%s%s",
-                preset.tooltip, kmh, mph, preset.speedPerSec, preset.boostMultiplier, preset.acceleration,
+                preset.tooltip, kmh, mph, v.speedPerSec, v.boostMultiplier, v.acceleration,
                 preset.credit ? "\n\n" : "", preset.credit ? preset.credit : "");
             ui->SetTooltip(tooltipBuf);
         }
@@ -984,9 +1221,9 @@ void RenderDronePanel(IModLoaderImGui* ui)
                              DroneConfig::Config::ReadSpeedPerSec(), g_drone.origSpeedPerSec,
                              kSpeedScale[unitIdx], &newSpeed, &speedCommit))
         {
-            DroneConfig::Config::SetSpeedPerSecLive(newSpeed);
+            PanelSettings::SetLive(PanelFloat::SpeedPerSec, newSpeed);
             if (speedCommit)
-                DroneConfig::Config::PersistSpeedPerSec();
+                PanelSettings::Commit(PanelFloat::SpeedPerSec);
         }
 
         float newAccel = 0.0f;
@@ -995,9 +1232,9 @@ void RenderDronePanel(IModLoaderImGui* ui)
                              DroneConfig::Config::ReadAcceleration(), DroneConfig::Config::DefaultAcceleration(),
                              kRateScale[unitIdx], &newAccel, &accelCommit))
         {
-            DroneConfig::Config::SetAccelerationLive(newAccel);
+            PanelSettings::SetLive(PanelFloat::Acceleration, newAccel);
             if (accelCommit)
-                DroneConfig::Config::PersistAcceleration();
+                PanelSettings::Commit(PanelFloat::Acceleration);
         }
 
         float newDecel = 0.0f;
@@ -1006,9 +1243,9 @@ void RenderDronePanel(IModLoaderImGui* ui)
                              DroneConfig::Config::ReadDeceleration(), DroneConfig::Config::DefaultDeceleration(),
                              kRateScale[unitIdx], &newDecel, &decelCommit))
         {
-            DroneConfig::Config::SetDecelerationLive(newDecel);
+            PanelSettings::SetLive(PanelFloat::Deceleration, newDecel);
             if (decelCommit)
-                DroneConfig::Config::PersistDeceleration();
+                PanelSettings::Commit(PanelFloat::Deceleration);
         }
 
         float newBoost = 0.0f;
@@ -1017,9 +1254,9 @@ void RenderDronePanel(IModLoaderImGui* ui)
                              DroneConfig::Config::ReadBoostMultiplier(), DroneConfig::Config::DefaultBoostMultiplier(),
                              kBoostScale, &newBoost, &boostCommit))
         {
-            DroneConfig::Config::SetBoostMultiplierLive(newBoost);
+            PanelSettings::SetLive(PanelFloat::BoostMultiplier, newBoost);
             if (boostCommit)
-                DroneConfig::Config::PersistBoostMultiplier();
+                PanelSettings::Commit(PanelFloat::BoostMultiplier);
         }
 
         ui->EndTable();
@@ -1031,22 +1268,23 @@ void RenderDronePanel(IModLoaderImGui* ui)
     ui->Spacing();
 
     ui->PushIDStr("range_presets");
-    for (int i = 0; i < k_rangePresetCount; ++i)
+    for (int i = 0; i < PanelSettings::kRangePresetCount; ++i)
     {
-        const auto& preset = k_rangePresets[i];
+        const auto& preset = PanelSettings::kRangePresets[i];
         if (i > 0) ui->SameLine(0.0f, -1.0f);
 
         if (ui->SmallButton(preset.label))
         {
-            ApplyRangePreset(preset);
+            PanelSettings::ApplyRangePreset(preset);
         }
         if (ui->IsItemHovered())
         {
+            const PanelSettings::RangeValues v = PanelSettings::RangeValuesOf(preset);
             char tooltipBuf[320];
             snprintf(tooltipBuf, sizeof(tooltipBuf),
                 "%s\n\nRange: %.0f m H / %.0f m V (%.0f ft H / %.0f ft V)%s%s",
-                preset.tooltip, preset.maxRadius / 100.0f, preset.maxHeight / 100.0f,
-                preset.maxRadius * 0.0328084f, preset.maxHeight * 0.0328084f,
+                preset.tooltip, v.maxRadius / 100.0f, v.maxHeight / 100.0f,
+                v.maxRadius * 0.0328084f, v.maxHeight * 0.0328084f,
                 preset.credit ? "\n\n" : "", preset.credit ? preset.credit : "");
             ui->SetTooltip(tooltipBuf);
         }
@@ -1077,10 +1315,9 @@ void RenderDronePanel(IModLoaderImGui* ui)
                              engineRadius, g_drone.origMaxRadius,
                              kRadiusScale[unitIdx], &newRadius, &radiusCommit))
         {
-            const float radius = DroneConfig::Config::SetMaxRadiusLive(newRadius);
-            RequestMaxRadius(radius);
+            const float radius = PanelSettings::SetLive(PanelFloat::MaxRadius, newRadius);
             if (radiusCommit)
-                DroneConfig::Config::PersistMaxRadius();
+                PanelSettings::Commit(PanelFloat::MaxRadius);
             engineRadius = radius;
         }
 
@@ -1107,10 +1344,9 @@ void RenderDronePanel(IModLoaderImGui* ui)
                              engineHeight, g_drone.origMaxHeight,
                              kHeightScale[unitIdx], &newHeight, &heightCommit))
         {
-            const float height = DroneConfig::Config::SetMaxHeightLive(newHeight);
-            RequestMaxHeight(height);
+            const float height = PanelSettings::SetLive(PanelFloat::MaxHeight, newHeight);
             if (heightCommit)
-                DroneConfig::Config::PersistMaxHeight();
+                PanelSettings::Commit(PanelFloat::MaxHeight);
             engineHeight = height;
         }
 
@@ -1120,6 +1356,29 @@ void RenderDronePanel(IModLoaderImGui* ui)
         snprintf(heightEquiv, sizeof(heightEquiv), "Vertical Ceiling: %.1f m  |  %.0f ft",
             engineHeight * 0.01f, engineHeight * 0.0328084f);
         ui->TextDisabled(heightEquiv);
+    }
+
+    ui->Spacing();
+
+    if (ui->BeginTable("##drone_size_table", 3, kTableFlags))
+    {
+        ui->TableSetupColumn("", 0, 0.36f);
+        ui->TableSetupColumn("", 0, 0.54f);
+        ui->TableSetupColumn("", 0, 0.10f);
+
+        float newSize = 0.0f;
+        bool  sizeCommit = false;
+        if (RenderScaledRow(ui, "##dsize", "Drone Size",
+                             "Collision radius of the drone. Smaller fits through narrower gaps, such as ladder holes. 50 is stock.",
+                             DroneConfig::Config::ReadSphereRadius(), g_drone.origSphereRadius,
+                             kSphereScale, &newSize, &sizeCommit))
+        {
+            PanelSettings::SetLive(PanelFloat::SphereRadius, newSize);
+            if (sizeCommit)
+                PanelSettings::Commit(PanelFloat::SphereRadius);
+        }
+
+        ui->EndTable();
     }
 
     ui->Spacing();

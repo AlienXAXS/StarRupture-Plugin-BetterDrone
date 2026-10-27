@@ -1,10 +1,12 @@
 #include "drone_settings.h"
 #include "drone_config.h"
 #include "drone_audio.h"
+#include "drone_floor_guard.h"
 #include "drone_interact.h"
 #include "drone_sprint_key.h"
 #include "drone_key_vk.h"
 #include "plugin_helpers.h"
+#include "object_ref.h"
 #include <AuActorPlacement_classes.hpp>
 #include <Chimera_classes.hpp>
 #include <BP_FloatingDrone_classes.hpp>
@@ -36,6 +38,10 @@ namespace
 
     std::atomic<bool> g_lastKnownInDrone{ false };
 
+    // The thread OnDroneTick runs on, so shutdown can tell whether it may
+    // touch the live drone. 0 until the first tick.
+    std::atomic<DWORD> g_gameThreadId{ 0 };
+
     float g_currentEffectiveSpeed = 0.0f;
 
     // Last base speed OnDroneTick observed, so a slider/preset/config change
@@ -56,29 +62,9 @@ namespace
     bool g_boostWasActive = false;
     bool g_loggedInstanceReport = false;
 
-    // The text after the last '+' in a combo string ("Shift+K" -> "K"),
-    // or the whole string when there's no modifier prefix.
-    void ExtractBaseKey(const char* combo, char* outBuf, size_t outSize)
-    {
-        const char* base = combo ? combo : "";
-        const char* lastPlus = std::strrchr(base, '+');
-        if (lastPlus)
-            base = lastPlus + 1;
-
-        snprintf(outBuf, outSize, "%s", base);
-    }
-
-    // GetAsyncKeyState is global -- don't boost on a Shift held in another window.
-    bool GameHasFocus()
-    {
-        HWND fg = GetForegroundWindow();
-        if (!fg)
-            return false;
-
-        DWORD fgProcessId = 0;
-        GetWindowThreadProcessId(fg, &fgProcessId);
-        return fgProcessId == GetCurrentProcessId();
-    }
+    // Drone Size wanted on the live drone, in cm. Set from the pending
+    // request on the tick; starts at the stock radius.
+    float g_droneSizeCm = 0.0f;
 
     void OnBoostKeyPressed(EModKey, EModKeyEvent event)
     {
@@ -166,6 +152,7 @@ namespace
     void OnWorldEndPlay(SDK::UWorld*, const char* worldName)
     {
         DroneAudio::OnWorldEnd();
+        ResetDroneFloorGuard();
 
         if (worldName && std::strcmp(worldName, "ChimeraMain") == 0)
             g_inGameSession = false;
@@ -228,11 +215,180 @@ bool InitDroneSettings()
     g_drone.origWarningRadius = *g_drone.warningRadius;
     g_drone.origMaxHeight     = *g_drone.maxHeight;
     g_drone.origWarningHeight = *g_drone.warningHeight;
+    g_drone.origSphereRadius  = cdo->BuildingDroneSphereRadius;
     g_drone.valid             = true;
     g_currentEffectiveSpeed   = *g_drone.speedPerSec;
+    g_droneSizeCm             = g_drone.origSphereRadius;
 
     LOG_DEBUG("InitDroneSettings: CDO found at %p", static_cast<void*>(cdo));
     return true;
+}
+
+namespace
+{
+    // Game thread only. The local player's drone sphere, or nullptr when no
+    // drone is out. Re-resolved on every call, never kept.
+    SDK::USphereComponent* LiveDroneSphere()
+    {
+        SDK::ACrCharacterPlayerBase* character = LocalPlayerCharacter();
+        SDK::ACrCharacterDroneBase* drone = character ? character->BuildingDrone : nullptr;
+        return drone ? drone->SphereComponent : nullptr;
+    }
+
+    // Drone Size, applied to the live drone. Game thread only.
+    //
+    // The game moves the drone by pushing its physics body with a force, so
+    // a body that got lighter as it shrank would fly faster. Each drone's
+    // body keeps the mass it has at the stock radius: read once, before the
+    // first resize, and set as a mass override after every resize. The body
+    // is held as an ObjectRef, so a drone that is gone is never touched.
+    ObjectRef<SDK::USphereComponent> g_sizedSphere;
+
+    // g_sizedSphere's body as the game made it, at the stock radius.
+    struct StockBody
+    {
+        float massKg = 0.0f;
+        float overrideKg = 0.0f;   // BodyInstance.MassInKgOverride
+        bool  overridden = false;  // the drone already had a mass override
+    };
+    StockBody g_stockBody;
+
+    // The drone's mesh, SM_BuidingDrone, is welded to the sphere's physics
+    // body and blocks the world with a plate about 43 x 48 cm that does not
+    // shrink with Drone Size. Below the stock radius it is the widest part
+    // of the body and catches on edges the sphere would pass, so it leaves
+    // the physics body (keeping its query collision) until the drone is back
+    // at the stock radius. mesh is set only while its collision is changed.
+    struct ChangedPlate
+    {
+        ObjectRef<SDK::UStaticMeshComponent> mesh;
+        SDK::ECollisionEnabled original = SDK::ECollisionEnabled::NoCollision;
+        SDK::FName profile;
+        bool       namedProfile = false;  // profile is a named preset, not Custom
+    };
+    ChangedPlate g_plate;
+
+    bool IsStockSize(float radiusCm)
+    {
+        return std::fabs(radiusCm - g_drone.origSphereRadius) <= 0.01f;
+    }
+
+    // Sets the body's mass the way the game had it: an override only if
+    // the drone came with one.
+    void SetStockMassSetting(SDK::USphereComponent* sphere)
+    {
+        sphere->SetMassOverrideInKg(SDK::FName(), g_stockBody.overrideKg, g_stockBody.overridden);
+    }
+
+    // Game thread only. Re-resolved on every call, never kept.
+    SDK::ABP_FloatingDrone_C* FloatingDrone(SDK::USphereComponent* sphere)
+    {
+        SDK::AActor* owner = sphere->GetOwner();
+        if (!owner || !owner->IsA(SDK::ABP_FloatingDrone_C::StaticClass()))
+            return nullptr;
+        return static_cast<SDK::ABP_FloatingDrone_C*>(owner);
+    }
+
+    // Gives the mesh back the collision the game gave it. Setting the
+    // collision state renames the profile to Custom, so a named profile is
+    // put back by name. A mesh that is gone needs nothing.
+    void RestorePlate()
+    {
+        SDK::UStaticMeshComponent* mesh = g_plate.mesh.Get();
+        g_plate.mesh.Reset();
+        if (!mesh)
+            return;
+
+        // The state first: setting it is what welds the mesh back into the
+        // drone's physics body. Loading a profile writes the state without
+        // rebuilding the body, so it only puts the name back.
+        mesh->SetCollisionEnabled(g_plate.original);
+        if (g_plate.namedProfile)
+            mesh->SetCollisionProfileName(g_plate.profile, false);
+    }
+
+    // Below the stock radius, takes the mesh out of the physics body and
+    // leaves its query collision as it was; at or above it, restores it.
+    void ApplyPlateCollision(SDK::USphereComponent* sphere, float radiusCm)
+    {
+        SDK::ABP_FloatingDrone_C* drone = FloatingDrone(sphere);
+        SDK::UStaticMeshComponent* mesh = drone ? drone->SM_BuidingDrone : nullptr;
+        const bool shrink = mesh && radiusCm < g_drone.origSphereRadius - 0.01f;
+
+        if (!shrink || g_plate.mesh.Get() != mesh)
+            RestorePlate();
+        if (!shrink || g_plate.mesh.Get() == mesh)
+            return;
+
+        const SDK::ECollisionEnabled original = mesh->GetCollisionEnabled();
+        SDK::ECollisionEnabled target;
+        if (original == SDK::ECollisionEnabled::QueryAndPhysics)
+            target = SDK::ECollisionEnabled::QueryOnly;
+        else if (original == SDK::ECollisionEnabled::PhysicsOnly)
+            target = SDK::ECollisionEnabled::NoCollision;
+        else
+            return;  // not part of the physics body to begin with
+
+        g_plate.mesh.Set(mesh);
+        g_plate.original     = original;
+        g_plate.profile      = mesh->GetCollisionProfileName();
+        g_plate.namedProfile = g_plate.profile.ToString() != "Custom";
+        mesh->SetCollisionEnabled(target);
+    }
+
+    void ResizeDroneSphere(SDK::USphereComponent* sphere, float radiusCm)
+    {
+        if (g_sizedSphere.Get() != sphere)
+        {
+            // A drone not resized yet spawned at the stock radius, since
+            // the CDO is left alone. Anything else is put back first, so the
+            // mass read is the stock one.
+            if (!IsStockSize(sphere->SphereRadius))
+                sphere->SetSphereRadius(g_drone.origSphereRadius, true);
+
+            // Setting the mass the way it already is makes the body work
+            // its mass out again, so the read below is the stock shape's.
+            g_sizedSphere.Set(sphere);
+            g_stockBody.overrideKg = sphere->BodyInstance.MassInKgOverride;
+            g_stockBody.overridden = sphere->BodyInstance.bOverrideMass;
+            SetStockMassSetting(sphere);
+            g_stockBody.massKg = sphere->GetMass();
+        }
+
+        // The game's own mass setting, applied after the resize so the body
+        // works its mass out from the new shape.
+        sphere->SetSphereRadius(radiusCm, true);
+        ApplyPlateCollision(sphere, radiusCm);
+        SetStockMassSetting(sphere);
+
+        if (!IsStockSize(radiusCm) && g_stockBody.massKg > 0.0f)
+        {
+            // The override sets the sphere's own mass, but the body's total
+            // also counts the parts welded to it. Take their share off once,
+            // so the whole body weighs what it did at the stock radius.
+            sphere->SetMassOverrideInKg(SDK::FName(), g_stockBody.massKg, true);
+            const float overrideKg = 2.0f * g_stockBody.massKg - sphere->GetMass();
+            if (overrideKg > 0.0f && std::fabs(overrideKg - g_stockBody.massKg) > 0.01f)
+                sphere->SetMassOverrideInKg(SDK::FName(), overrideKg, true);
+        }
+    }
+
+    // Puts the drone we resized back as the game made it: the stock radius
+    // and its own mass setting. A drone that is gone needs nothing. Game
+    // thread only.
+    void RestoreDroneBody()
+    {
+        RestorePlate();
+
+        SDK::USphereComponent* sphere = g_sizedSphere.Get();
+        g_sizedSphere.Reset();
+        if (!sphere)
+            return;
+
+        if (!IsStockSize(sphere->SphereRadius))
+            sphere->SetSphereRadius(g_drone.origSphereRadius, true);
+        SetStockMassSetting(sphere);
+    }
 }
 
 void RestoreCDODefaults()
@@ -240,14 +396,25 @@ void RestoreCDODefaults()
     if (!g_drone.valid)
         return;
 
+    // Shutdown runs on the game thread on loader 1.22 and later; anywhere
+    // else, leave the live drone alone.
+    if (GetCurrentThreadId() == g_gameThreadId.load(std::memory_order_relaxed))
+    {
+        try
+        {
+            RestoreDroneBody();
+        }
+        catch (...) {}
+    }
+
     *g_drone.speedPerSec   = g_drone.origSpeedPerSec;
     *g_drone.maxRadius     = g_drone.origMaxRadius;
     *g_drone.warningRadius = g_drone.origWarningRadius;
     *g_drone.maxHeight     = g_drone.origMaxHeight;
     *g_drone.warningHeight = g_drone.origWarningHeight;
 
-    LOG_DEBUG("RestoreCDODefaults: speed=%.0f maxRadius=%.0f maxHeight=%.0f",
-        g_drone.origSpeedPerSec, g_drone.origMaxRadius, g_drone.origMaxHeight);
+    LOG_DEBUG("RestoreCDODefaults: speed=%.0f maxRadius=%.0f maxHeight=%.0f sphereRadius=%.0f",
+        g_drone.origSpeedPerSec, g_drone.origMaxRadius, g_drone.origMaxHeight, g_drone.origSphereRadius);
 }
 
 void UpdateActiveDrones()
@@ -350,6 +517,7 @@ namespace
     std::atomic<bool> g_pendingUpdateDrones{ false };
     PendingFloat      g_pendingRadius;
     PendingFloat      g_pendingHeight;
+    PendingFloat      g_pendingSphere;
 }
 
 void RequestUpdateActiveDrones()
@@ -369,6 +537,11 @@ void RequestMaxHeight(float heightCm)
     RequestUpdateActiveDrones();
 }
 
+void RequestSphereRadius(float radiusCm)
+{
+    g_pendingSphere.Request(radiusCm);
+}
+
 void UpdateBoostKeyCache(const char* keyName)
 {
     g_boostKeyVk.store(KeyNameToVk(keyName), std::memory_order_relaxed);
@@ -379,7 +552,11 @@ void OnDroneTick(float deltaSeconds)
     if (!g_drone.valid || !g_drone.speedPerSec)
         return;
 
+    g_gameThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
+
     bool needsInstanceUpdate = false;
+
+    g_pendingSphere.TakeIfPending(&g_droneSizeCm);
 
     if (g_pendingUpdateDrones.exchange(false, std::memory_order_relaxed))
     {
@@ -410,7 +587,24 @@ void OnDroneTick(float deltaSeconds)
         if (g_boostFollowsSprint.load(std::memory_order_relaxed))
             ResolveAndCacheSprintKey();
     }
+    // A drone that stays around after the player leaves it goes back to
+    // the game's size and mass until the next launch.
+    if (!inDrone && g_wasInDrone)
+        RestoreDroneBody();
     g_wasInDrone = inDrone;
+
+    // Each drone spawns at the stock radius and is resized here, on its
+    // first tick out and whenever Drone Size changes. Reading the sphere
+    // each tick also covers a spawn that lands after the launch edge.
+    if (inDrone)
+    {
+        SDK::USphereComponent* sphere = LiveDroneSphere();
+        if (sphere)
+        {
+            if (std::fabs(sphere->SphereRadius - g_droneSizeCm) > 0.01f)
+                ResizeDroneSphere(sphere, g_droneSizeCm);
+        }
+    }
 
     bool held = g_boostKeyHeld.load(std::memory_order_relaxed);
     if (!held && inDrone)

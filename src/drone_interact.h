@@ -33,9 +33,23 @@
 // UCrInputNativeMapMenu, belongs to the unbound on-foot config, and the
 // controller function behind it has no drone check of its own.
 // InitDroneMap supplies that key from the keybind dispatch as well.
+//
+// Flying the drone does not uncover the map either. UCrMapManuSubsystem
+// uncovers it around the player's body, sampled from the character's
+// movement component, and the body stays where it was left while the drone
+// is out. InitDroneFog feeds the drone's position to the same function, at
+// the same spacing, when "Drone Reveals Map" is on.
+//
+// The building menu closes on Escape and Q by putting the building tool
+// away, and in drone mode putting the tool away ends the drone. Every other
+// menu closes on those keys and nothing more. InitDroneBuildMenu makes the
+// building menu close like the others while the drone is out; on foot it is
+// left as it is.
 
 struct IPluginSelf;
 struct IPluginHookScanner;
+
+namespace SDK { class ACrCharacterPlayerBase; class ACrPlayerControllerBase; class UCrUW_MapMenu; }
 
 // Resolve every AOB the interact path needs. Callable only from
 // OnPluginLoadHooks — the loader refuses scans made anywhere else.
@@ -52,5 +66,40 @@ bool InitDroneMap();
 
 void ShutdownDroneMap();
 
+// Same contract as ResolveDroneInteract, for the map-reveal path.
+void ResolveDroneFog(IPluginSelf* self, IPluginHookScanner* scanner);
+
+bool InitDroneFog();
+
+void ShutdownDroneFog();
+
+// Same contract as ResolveDroneInteract, for the building menu path.
+void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner);
+
+bool InitDroneBuildMenu();
+
+void ShutdownDroneBuildMenu();
+
+// "Drone Reveals Map" as the loader just reported it. The tick reads a
+// cached copy, never the INI.
+void SetDroneFogEnabled(bool enabled);
+
+// Game thread only. The local player's character, or nullptr outside a game.
+// It stays the possessed pawn while the drone is out.
+SDK::ACrCharacterPlayerBase* LocalPlayerCharacter();
+
 // Game thread only.
 bool IsLocalPlayerInDrone();
+
+// Game thread only. The local player's controller, or nullptr outside a game.
+// Valid for the current tick only.
+SDK::ACrPlayerControllerBase* LocalPlayerController();
+
+// Game thread only. The map, if it is the active widget on the local player's
+// menu layer, whether it was opened from drone mode or on foot. Valid for the
+// current tick only.
+SDK::UCrUW_MapMenu* ActiveLocalMap();
+
+// Game thread only. True while anything is on the game's menu layer: the map,
+// the inventory, a building window, the pause menu.
+bool IsGameMenuOpen();

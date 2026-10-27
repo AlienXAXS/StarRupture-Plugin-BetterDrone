@@ -7,7 +7,9 @@
 #include <CommonGame_classes.hpp>
 #include <EnhancedInput_structs.hpp>
 #include <Engine_classes.hpp>
+#include <GameplayAbilities_classes.hpp>
 #include <atomic>
+#include <optional>
 #include <windows.h>
 
 namespace
@@ -90,13 +92,20 @@ namespace
         LOG_DEBUG("DroneInteract: interact key seen but nothing sent -- %s", reason);
     }
 
-    SDK::ACrCharacterPlayerBase* DroneCharacter(SDK::ACrPlayerControllerBase* pc)
+    // The controller's character while it is flying the drone, else null.
+    SDK::ACrCharacterPlayerBase* PilotingCharacter(SDK::ACrPlayerControllerBase* pc)
     {
-        if (!pc)
+        SDK::ACrCharacterPlayerBase* character = pc ? pc->CrChar : nullptr;
+        if (!character || character->Status != SDK::EPlayerCharacterStatus::BuildingDrone)
             return nullptr;
 
-        SDK::ACrCharacterPlayerBase* character = pc->CrChar;
-        if (!character || character->Status != SDK::EPlayerCharacterStatus::BuildingDrone)
+        return character;
+    }
+
+    SDK::ACrCharacterPlayerBase* DroneCharacter(SDK::ACrPlayerControllerBase* pc)
+    {
+        SDK::ACrCharacterPlayerBase* character = PilotingCharacter(pc);
+        if (!character)
             return nullptr;
 
         // Checked last: this runs from a targeting tick, and the pointer reads
@@ -138,6 +147,41 @@ namespace
         return false;
     }
 
+    // Stands the character's root component at the drone's camera for as long
+    // as it is in scope, then puts it back. Only the cached world translation
+    // is rewritten, and it is restored before the scope ends, so only the
+    // native calls made inside the scope see the move.
+    class BodyAtDroneCamera
+    {
+    public:
+        BodyAtDroneCamera(SDK::USceneComponent* root, const SDK::UCameraComponent* droneCam)
+            : m_translation(reinterpret_cast<double*>(
+                  reinterpret_cast<uint8_t*>(root) + k_componentToWorldTranslation))
+        {
+            const auto* camTranslation = reinterpret_cast<const double*>(
+                reinterpret_cast<const uint8_t*>(droneCam) + k_componentToWorldTranslation);
+
+            for (int i = 0; i < 3; ++i)
+            {
+                m_saved[i]       = m_translation[i];
+                m_translation[i] = camTranslation[i];
+            }
+        }
+
+        ~BodyAtDroneCamera()
+        {
+            for (int i = 0; i < 3; ++i)
+                m_translation[i] = m_saved[i];
+        }
+
+        BodyAtDroneCamera(const BodyAtDroneCamera&)            = delete;
+        BodyAtDroneCamera& operator=(const BodyAtDroneCamera&) = delete;
+
+    private:
+        double* m_translation;
+        double  m_saved[3] = {};
+    };
+
     void __fastcall Detour_OnInteractableTargetsChanged(void* pc, const void* newTargets)
     {
         SDK::ACrCharacterPlayerBase* character = DroneCharacter(static_cast<SDK::ACrPlayerControllerBase*>(pc));
@@ -149,15 +193,6 @@ namespace
             g_origTargetsChanged(pc, newTargets);
             return;
         }
-
-        // The original bails out on IsBuildingDroneActive, and ranges every
-        // candidate against the character's root component. Hand it a character
-        // that is not in drone mode and is standing at the drone's camera, then
-        // put both back before anything else can observe them.
-        auto*       rootTranslation = reinterpret_cast<double*>(
-            reinterpret_cast<uint8_t*>(root) + k_componentToWorldTranslation);
-        const auto* camTranslation  = reinterpret_cast<const double*>(
-            reinterpret_cast<const uint8_t*>(droneCam) + k_componentToWorldTranslation);
 
         // A second gate sits ahead of the drone one: DeconstructMode jumps
         // straight to ResetInteractableActor. The drone is summoned from the
@@ -179,24 +214,23 @@ namespace
         auto*         controlState      = reinterpret_cast<uint8_t*>(pc) + k_pcPlayerControlState;
         const uint8_t savedControlState = *controlState;
 
+        // The original bails out on IsBuildingDroneActive, and ranges every
+        // candidate against the character's root component. Hand it a character
+        // that is not in drone mode and is standing at the drone's camera, then
+        // put both back before anything else can observe them.
         const SDK::EPlayerCharacterStatus savedStatus = character->Status;
-        const double savedTranslation[3] = { rootTranslation[0], rootTranslation[1], rootTranslation[2] };
-
-        character->Status  = SDK::EPlayerCharacterStatus::None;
-        rootTranslation[0] = camTranslation[0];
-        rootTranslation[1] = camTranslation[1];
-        rootTranslation[2] = camTranslation[2];
+        character->Status = SDK::EPlayerCharacterStatus::None;
 
         if (savedControlState == k_controlStateDeconstructMode)
             *controlState = k_controlStateNormal;
 
-        g_origTargetsChanged(pc, newTargets);
+        {
+            const BodyAtDroneCamera atDrone(root, droneCam);
+            g_origTargetsChanged(pc, newTargets);
+        }
 
-        *controlState      = savedControlState;
-        rootTranslation[0] = savedTranslation[0];
-        rootTranslation[1] = savedTranslation[1];
-        rootTranslation[2] = savedTranslation[2];
-        character->Status  = savedStatus;
+        *controlState     = savedControlState;
+        character->Status = savedStatus;
     }
 
     void __fastcall Detour_NativeOnInputInteractStarted(void* pc)
@@ -218,11 +252,33 @@ namespace
         return g_origInteractCompleted(pc);
     }
 
+    // A gatherable (wild plants, fruit, eggs) ranges itself against the
+    // possessed pawn, which in drone mode is the parked body:
+    // ACrGatherableBaseActor::CanInteract refuses one more than
+    // GatherableCropSettings' GatherableInteractionDistanceThresholdInCm away.
+    // Targeting picks it with the body at the drone's camera, but the press and
+    // release handlers ask CanInteract again, so they need the body there too.
+    // Crops and every other target keep the path they had.
+    bool IsGatherableTarget(SDK::ACrPlayerControllerBase* pc)
+    {
+        SDK::AActor* target = pc->CurrentInteractableActor;
+        return target && target->IsA(SDK::ACrGatherableBaseActor::StaticClass());
+    }
+
     // Mirrors UCrInputNativeInteract: press starts a held interaction, release
     // finishes it, and an interaction that never started falls through to the
     // instant one.
-    void DispatchInteract(SDK::ACrPlayerControllerBase* pc, bool press, bool release)
+    void DispatchInteract(SDK::ACrPlayerControllerBase* pc, SDK::ACrCharacterPlayerBase* character,
+                          bool press, bool release)
     {
+        // Only where the gather is granted: a client also asks the server,
+        // which checks the range again against the body it holds, refuses,
+        // and leaves the plant marked gathered on the client alone.
+        std::optional<BodyAtDroneCamera> atDrone;
+        if (character->RootComponent && character->DroneCamera && IsGatherableTarget(pc) &&
+            SDK::UKismetSystemLibrary::IsServer(character))
+            atDrone.emplace(character->RootComponent, character->DroneCamera);
+
         if (press)
             reinterpret_cast<InteractVoid_t>(g_addrInteractStarted)(pc);
 
@@ -282,7 +338,7 @@ namespace
         }
 
         g_lastGate = nullptr;
-        DispatchInteract(pc, press, release);
+        DispatchInteract(pc, character, press, release);
     }
 
     void OnInteractKey(EModKey, EModKeyEvent event)
@@ -439,15 +495,22 @@ namespace
         return nullptr;
     }
 
-    // The map, if it is the active widget on the menu layer and not already
-    // closing. DisplayedWidget is what the stack's GetActiveWidget returns.
-    SDK::UCrUW_MapMenu* ActiveMap(SDK::UCommonActivatableWidgetContainerBase* layer)
+    // The menu of type T, if it is the active widget on the menu layer and
+    // not already closing. DisplayedWidget is what the stack's
+    // GetActiveWidget returns.
+    template <class T>
+    T* ActiveMenu(SDK::UCommonActivatableWidgetContainerBase* layer)
     {
         SDK::UCommonActivatableWidget* top = layer->DisplayedWidget;
-        if (!top || !top->bIsActive || !top->IsA(SDK::UCrUW_MapMenu::StaticClass()))
+        if (!top || !top->bIsActive || !top->IsA(T::StaticClass()))
             return nullptr;
 
-        return static_cast<SDK::UCrUW_MapMenu*>(top);
+        return static_cast<T*>(top);
+    }
+
+    SDK::UCrUW_MapMenu* ActiveMap(SDK::UCommonActivatableWidgetContainerBase* layer)
+    {
+        return ActiveMenu<SDK::UCrUW_MapMenu>(layer);
     }
 
     // Idle until the map key is pressed, then tracks the menu layer only
@@ -460,11 +523,10 @@ namespace
         if (!press && !g_menuWasOpen.load(std::memory_order_relaxed))
             return;
 
-        SDK::ACrPlayerControllerBase* pc        = LocalController();
-        SDK::ACrCharacterPlayerBase*  character = pc ? pc->CrChar : nullptr;
+        SDK::ACrPlayerControllerBase* pc = LocalController();
 
         // On foot the game opens the map itself, so this stays out of it.
-        const bool inDrone = character && character->Status == SDK::EPlayerCharacterStatus::BuildingDrone;
+        const bool inDrone = PilotingCharacter(pc) != nullptr;
 
         // The map handler never checks what is already on screen, so it
         // would push the map on top of any other menu. A widget stays on
@@ -504,14 +566,215 @@ namespace
     {
         g_pendingMapPress.store(true, std::memory_order_relaxed);
     }
+
+    // UCrMapManuSubsystem::UncoverFogOfWar(PlayerController, Location, Radius).
+    // Public but not a UFunction. It reveals the map around Location for the
+    // player character the controller is possessing: it gives up unless that
+    // pawn is an ACrCharacterPlayerBase, clears the character's
+    // UCrPlayerMapMenuDataComponent fog cells within Radius, and redraws the
+    // map texture only when that character is locally controlled. The
+    // subsystem's own tick calls it from RecordPlayerLocation with the body's
+    // position. The location arrives by pointer, as the x64 ABI passes a
+    // 12-byte struct, and only its X and Y are read.
+    typedef void (__fastcall* UncoverFogOfWar_t)(void* subsystem, const void* pc,
+                                                 const SDK::FVector3f* location, float radius);
+
+    // Resolved during OnPluginLoadHooks; 0 means the pattern missed on this build.
+    uintptr_t g_addrUncoverFog = 0;
+
+    // Runs on through the first single-precision subtractions on the location
+    // (subss), so a build that switched the parameter to a double FVector
+    // misses here instead of being called with the wrong layout.
+    constexpr const char* kUncoverFogPattern =
+        "48 89 5C 24 ?? 48 89 6C 24 ?? 56 48 83 EC ?? F2 41 0F 10 00 48 8B F2 "
+        "0F 29 74 24 ?? 48 8B E9 F2 0F 11 44 24 ?? 0F 28 F3 E8 ?? ?? ?? ?? "
+        "48 8B D8 48 83 B8 ?? ?? ?? ?? 00 75 ?? 48 8B C8 E8 ?? ?? ?? ?? "
+        "48 8B 83 ?? ?? ?? ?? 48 89 7C 24 ?? 48 85 C0 75 ?? 48 8B 3D ?? ?? ?? ?? "
+        "EB ?? 66 0F 6E 50 ?? F3 0F 10 44 24 ?? F3 0F 10 4C 24 ?? "
+        "F3 0F 5C 40 ?? F3 0F 5C 48";
+
+    // Status.InForgottenEngine, the tag the game's own footstep reveal checks
+    // (IsPlayerInForgottenEngine) before uncovering anything. Built on the
+    // game thread the first time it is needed; an FName stays valid.
+    SDK::FGameplayTag g_forgottenEngineTag = {};
+
+    // True only when the character's ability system can be read and does not
+    // carry the tag. Anything unreadable counts as inside, so nothing is
+    // revealed that the game would not reveal on foot.
+    bool OutsideForgottenEngine(SDK::ACrCharacterPlayerBase* character)
+    {
+        if (g_forgottenEngineTag.TagName.IsNone())
+            g_forgottenEngineTag.TagName = SDK::BasicFilesImplUtils::StringToName(L"Status.InForgottenEngine");
+        if (g_forgottenEngineTag.TagName.IsNone())
+            return false;
+
+        SDK::UAbilitySystemComponent* asc = SDK::UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(character);
+        return asc && asc->GetGameplayTagCount(g_forgottenEngineTag) == 0;
+    }
+
+    // Cached so the tick never reads the INI. Written from the loader's
+    // config-changed callback, read on the game thread.
+    std::atomic<bool> g_fogEnabled{ false };
+
+    // Where the drone last uncovered the map. Plain values, so nothing here
+    // outlives a world; cleared whenever the drone is not out.
+    bool         g_hasLastReveal = false;
+    SDK::FVector g_lastReveal    = {};
+
+    // Mirrors RecordPlayerLocation for the drone: uncover once on the first
+    // tick in the drone, then again each time the drone has moved more than
+    // MinFootstepDistance from the last spot, with the walking radius
+    // (FogOfWarPlayerUncoverRadius scaled by the FogOfWarRadiusMultiplier gem
+    // attribute), and never inside the Forgotten Engine, which the footstep
+    // reveal skips too. Everything is looked up fresh each tick.
+    void OnFogTick(float)
+    {
+        if (!g_fogEnabled.load(std::memory_order_relaxed))
+        {
+            g_hasLastReveal = false;
+            return;
+        }
+
+        SDK::ACrPlayerControllerBase* pc        = LocalController();
+        SDK::ACrCharacterPlayerBase*  character = PilotingCharacter(pc);
+        if (!character || character->bDead)
+        {
+            g_hasLastReveal = false;
+            return;
+        }
+
+        // UncoverFogOfWar reveals for the possessed pawn, which stays the
+        // character while the drone is out.
+        SDK::ACrCharacterDroneBase* drone = character->BuildingDrone;
+        if (pc->Pawn != static_cast<SDK::APawn*>(character) || !drone)
+            return;
+
+        SDK::UCrMapMenuDevSettings* settings = SDK::UCrMapMenuDevSettings::GetDefaultObj();
+        if (!settings)
+            return;
+
+        const SDK::FVector here = drone->K2_GetActorLocation();
+        if (g_hasLastReveal && here.GetDistanceTo(g_lastReveal) <= settings->MinFootstepDistance)
+            return;
+
+        // Checked only once the drone has moved far enough to reveal, so it
+        // costs nothing on the other ticks. The spot still counts as visited,
+        // so inside the zone the check runs once per step, not every tick.
+        if (!OutsideForgottenEngine(character))
+        {
+            g_lastReveal    = here;
+            g_hasLastReveal = true;
+            return;
+        }
+
+        auto* subsystem = SDK::USubsystemBlueprintLibrary::GetWorldSubsystem(
+            pc, SDK::UCrMapManuSubsystem::StaticClass());
+        if (!subsystem)
+            return;
+
+        float radius = settings->FogOfWarPlayerUncoverRadius;
+        if (SDK::UCrGemAttributeSet* gems = character->GemAttributes)
+            radius *= gems->FogOfWarRadiusMultiplier.CurrentValue;
+
+        const SDK::FVector3f location = { static_cast<float>(here.X),
+                                          static_cast<float>(here.Y),
+                                          static_cast<float>(here.Z) };
+        reinterpret_cast<UncoverFogOfWar_t>(g_addrUncoverFog)(subsystem, pc, &location, radius);
+
+        g_lastReveal    = here;
+        g_hasLastReveal = true;
+    }
+
+    // ACrCharacterPlayerBase::NativeOnWeaponCancelTool(this). Puts the
+    // building tool away (MulticastCancelTool, or the server RPC on a client),
+    // unless the building component can restore a move in progress, in which
+    // case it does that instead. Putting the tool away while the drone is out
+    // also ends the drone: the unequip reaches DeactivateBuildingDrone from
+    // UCrWeaponComponent::PostEquip.
+    //
+    // Two things call it: the cancel-tool input action, and
+    // UCrUW_BuildingMenu::HandleCancelTool. The building menu is the one menu
+    // that does not close the way the others do. UCrUW_ActivatableWidget
+    // binds its Back and Close actions (Escape and Q) to HandleDeactivate;
+    // UCrUW_BuildingMenu::SetupInputs binds both, and its CloseMenuInputAction,
+    // to HandleCancelTool, which tail-calls this with the menu's Player. On
+    // foot that closes the menu and puts the tool away in one press. In drone
+    // mode the same press ends the drone.
+    typedef void (__fastcall* NativeOnWeaponCancelTool_t)(void* character);
+
+    // UCrUW_ActivatableWidget::HandleDeactivate(this): how every other menu
+    // closes on Back and Close. With a Chimera controller it hands the menu
+    // layer to UCrUIManagerSubsystem::CloseMainWidgetByClass, which also puts
+    // the input config back to the game.
+    typedef void (__fastcall* HandleDeactivate_t)(void* widget);
+
+    // Resolved during OnPluginLoadHooks; 0 means the pattern missed on this build.
+    uintptr_t g_addrCancelTool       = 0;
+    uintptr_t g_addrHandleDeactivate = 0;
+
+    // Runs through the cancel's first gate, the weapon component flag at
+    // 0xDA0, and the controller's building component lookup.
+    constexpr const char* kCancelToolPattern =
+        "40 53 48 83 EC 20 48 8B 81 ?? ?? ?? ?? 48 8B D9 F6 80 ?? ?? ?? ?? 01 75 ?? "
+        "48 8B 89 ?? ?? ?? ?? 48 89 7C 24 30 48 85 C9 74 ?? E8";
+
+    // Runs to the end of the function: the two tails, the jump to
+    // CloseMainWidgetByClass and the fallback to DeactivateWidget for a
+    // controller that is not a Chimera one, are what tell it apart from the
+    // map's and the encyclopedia's own close handlers, which begin the same way.
+    constexpr const char* kHandleDeactivatePattern =
+        "48 89 5C 24 08 57 48 83 EC 20 48 8B 01 48 8B D9 FF 90 ?? ?? ?? ?? 48 8B F8 "
+        "48 85 C0 74 ?? E8 ?? ?? ?? ?? 48 8B 4F 10 48 83 C0 30 48 63 50 08 3B 51 38 "
+        "7F ?? 48 8B 49 30 48 39 04 D1 75 ?? 48 8B CB E8 ?? ?? ?? ?? 48 8B C8 E8 "
+        "?? ?? ?? ?? 48 8B D7 48 8B C8 48 8B 5C 24 30 48 83 C4 20 5F E9 ?? ?? ?? ?? "
+        "48 8B CB 48 8B 5C 24 30 48 83 C4 20 5F E9";
+
+    NativeOnWeaponCancelTool_t g_origCancelTool = nullptr;
+    HookHandle                 g_hookCancelTool = nullptr;
+
+    // The building menu this cancel came from, if the local player is flying
+    // the drone and that menu is the active widget on their menu layer.
+    // HandleCancelTool runs inside the menu's own action handler, so the
+    // menu is still up, and still active, when this is asked. Valid for this
+    // call only.
+    SDK::UCrUW_BuildingMenu* DroneBuildMenu(void* character)
+    {
+        SDK::ACrPlayerControllerBase* pc = LocalController();
+        if (!character || PilotingCharacter(pc) != character)
+            return nullptr;
+
+        SDK::UCommonActivatableWidgetContainerBase* layer = FindMenuLayer(pc);
+        SDK::UCrUW_BuildingMenu* menu = layer ? ActiveMenu<SDK::UCrUW_BuildingMenu>(layer) : nullptr;
+        if (!menu || menu->Player != character)
+            return nullptr;
+
+        return menu;
+    }
+
+    // Game thread: both callers are input handlers.
+    void __fastcall Detour_NativeOnWeaponCancelTool(void* character)
+    {
+        if (SDK::UCrUW_BuildingMenu* menu = DroneBuildMenu(character))
+        {
+            // Close it the way every other menu closes, and leave the tool,
+            // and so the drone, where they are. The next Escape or Q, with
+            // no menu up, goes the usual way.
+            LOG_DEBUG("DroneBuildMenu: building menu closed, drone kept");
+            reinterpret_cast<HandleDeactivate_t>(g_addrHandleDeactivate)(menu);
+            return;
+        }
+
+        g_origCancelTool(character);
+    }
 }
 
 // Every address this file resolves is a function entry, so each request
 // declares PLUGIN_SCAN_FUNCTION_START: three get a detour written over them,
-// and NativeOnInputInteract and the map handler are called directly. The
-// loader then checks the match against the executable's exception directory
-// instead of trusting that the bytes lined up -- a pattern that drifted into
-// the middle of some other function is refused rather than used.
+// and NativeOnInputInteract, the map handler and UncoverFogOfWar are called
+// directly. The loader then checks the match against the executable's
+// exception directory instead of trusting that the bytes lined up -- a
+// pattern that drifted into the middle of some other function is refused
+// rather than used.
 static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
                                  const char* hookName, const char* pattern)
 {
@@ -567,13 +830,43 @@ bool InitDroneInteract()
     return true;
 }
 
+SDK::ACrCharacterPlayerBase* LocalPlayerCharacter()
+{
+    SDK::ACrPlayerControllerBase* pc = LocalController();
+    return pc ? pc->CrChar : nullptr;
+}
+
+SDK::ACrPlayerControllerBase* LocalPlayerController()
+{
+    return LocalController();
+}
+
+SDK::UCrUW_MapMenu* ActiveLocalMap()
+{
+    SDK::ACrPlayerControllerBase* pc = LocalController();
+    SDK::UCommonActivatableWidgetContainerBase* layer = pc ? FindMenuLayer(pc) : nullptr;
+    return layer ? ActiveMap(layer) : nullptr;
+}
+
 bool IsLocalPlayerInDrone()
 {
     try
     {
+        return PilotingCharacter(LocalController()) != nullptr;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool IsGameMenuOpen()
+{
+    try
+    {
         SDK::ACrPlayerControllerBase* pc = LocalController();
-        SDK::ACrCharacterPlayerBase* character = pc ? pc->CrChar : nullptr;
-        return character && character->Status == SDK::EPlayerCharacterStatus::BuildingDrone;
+        SDK::UCommonActivatableWidgetContainerBase* layer = pc ? FindMenuLayer(pc) : nullptr;
+        return layer && layer->WidgetList.Num() > 0;
     }
     catch (...)
     {
@@ -644,4 +937,88 @@ void ShutdownDroneMap()
 
     g_pendingMapPress.store(false, std::memory_order_relaxed);
     g_menuWasOpen.store(false, std::memory_order_relaxed);
+}
+
+void ResolveDroneFog(IPluginSelf* self, IPluginHookScanner* scanner)
+{
+    if (!self || !scanner)
+        return;
+
+    g_addrUncoverFog = ResolveFunction(self, scanner,
+        "UCrMapManuSubsystem::UncoverFogOfWar", kUncoverFogPattern);
+}
+
+bool InitDroneFog()
+{
+    if (!g_addrUncoverFog)
+    {
+        LOG_WARN("DroneFog: UncoverFogOfWar unresolved — the drone will not uncover the map");
+        return false;
+    }
+
+    g_hasLastReveal = false;
+    SetDroneFogEnabled(DroneConfig::Config::ReadDroneRevealsMap());
+    GetSelf()->hooks->Engine->RegisterOnTick(OnFogTick);
+
+    LOG_INFO("DroneFog: UncoverFogOfWar at 0x%llX", g_addrUncoverFog);
+    return true;
+}
+
+void SetDroneFogEnabled(bool enabled)
+{
+    g_fogEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+void ShutdownDroneFog()
+{
+    GetSelf()->hooks->Engine->UnregisterOnTick(OnFogTick);
+
+    g_fogEnabled.store(false, std::memory_order_relaxed);
+}
+
+void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
+{
+    if (!self || !scanner)
+        return;
+
+    g_addrCancelTool = ResolveFunction(self, scanner,
+        "ACrCharacterPlayerBase::NativeOnWeaponCancelTool", kCancelToolPattern);
+    g_addrHandleDeactivate = ResolveFunction(self, scanner,
+        "UCrUW_ActivatableWidget::HandleDeactivate", kHandleDeactivatePattern);
+}
+
+bool InitDroneBuildMenu()
+{
+    if (!g_addrCancelTool || !g_addrHandleDeactivate)
+    {
+        LOG_WARN("DroneBuildMenu: unresolved addresses — cancelTool=0x%llX handleDeactivate=0x%llX; "
+                 "closing the building menu will still end drone mode",
+                 g_addrCancelTool, g_addrHandleDeactivate);
+        return false;
+    }
+
+    g_hookCancelTool = GetSelf()->hooks->Hooks->Install(
+        g_addrCancelTool,
+        reinterpret_cast<void*>(&Detour_NativeOnWeaponCancelTool),
+        reinterpret_cast<void**>(&g_origCancelTool));
+
+    if (!g_hookCancelTool)
+    {
+        LOG_WARN("DroneBuildMenu: hook installation failed");
+        return false;
+    }
+
+    LOG_INFO("DroneBuildMenu: NativeOnWeaponCancelTool at 0x%llX, HandleDeactivate at 0x%llX",
+             g_addrCancelTool, g_addrHandleDeactivate);
+    return true;
+}
+
+void ShutdownDroneBuildMenu()
+{
+    if (g_hookCancelTool)
+    {
+        GetSelf()->hooks->Hooks->Remove(g_hookCancelTool);
+        g_hookCancelTool = nullptr;
+        g_origCancelTool = nullptr;
+    }
 }

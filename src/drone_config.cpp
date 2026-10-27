@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 namespace DroneConfig
 {
@@ -19,6 +20,8 @@ namespace DroneConfig
         constexpr float kMaxRadiusBound      = 1000000.0f;
         constexpr float kMinHeight           = 100.0f;
         constexpr float kMaxHeightBound      = 500000.0f;
+        constexpr float kMinSphereRadius     = 20.0f;
+        constexpr float kMaxSphereRadius     = 50.0f;   // the stock radius
         constexpr float kMinBoostMultiplier  = 1.0f;
         constexpr float kMaxBoostMultiplier  = 10.0f;
 
@@ -30,7 +33,7 @@ namespace DroneConfig
         //
         // So this floor is a deliberate choice, not a game value: fast enough
         // to feel responsive, slow enough to never read as a snap. It covers
-        // the default 2x boost jump (1000 -> 2000 cm/s) in a quarter second.
+        // a 1000 cm/s boost jump in a quarter second.
         // It doubles as the reset-to-default value (DefaultAcceleration/
         // DefaultDeceleration in drone_config.h -- keep both in sync with
         // this), and as the Init clamp floor, so any saved 0 from before this
@@ -39,6 +42,9 @@ namespace DroneConfig
         constexpr float kMinAccelDecel       = 4000.0f;
         constexpr float kDefaultAccelDecel   = kMinAccelDecel;
         constexpr float kMaxAccelDecel       = 50000.0f;
+
+        constexpr float kMinVolume           = 0.0f;
+        constexpr float kMaxVolume           = 1.0f;
 
         float Clamp(float value, float lo, float hi)
         {
@@ -94,8 +100,19 @@ namespace DroneConfig
             return static_cast<float>(atof(buf));
         }
 
+        // Every write to the panel file goes through this one lock, so the
+        // file never depends on kernel32's own undocumented locking around
+        // WritePrivateProfileString. Recursive, so a caller can hold it
+        // across reading the value it is about to write: two writers of one
+        // key then land in the order they read, and the file never ends up
+        // behind the cache. It covers the file only; the cached values are
+        // atomics, and nothing here orders them against any other state.
+        std::recursive_mutex g_panelFileMutex;
+
         void PanelWriteFloat(const char* section, const char* key, float value)
         {
+            std::lock_guard<std::recursive_mutex> lock(g_panelFileMutex);
+
             char path[MAX_PATH] = {};
             GetPanelConfigPath(path, sizeof(path));
 
@@ -114,18 +131,90 @@ namespace DroneConfig
 
         void PanelWriteString(const char* section, const char* key, const char* value)
         {
+            std::lock_guard<std::recursive_mutex> lock(g_panelFileMutex);
+
             char path[MAX_PATH] = {};
             GetPanelConfigPath(path, sizeof(path));
             WritePrivateProfileStringA(section, key, value, path);
         }
 
+        // The panel needs the unit every frame it draws, so it is cached like the
+        // floats rather than read from the file on each call.
+        const char* const kSpeedUnits[] = { "km/h", "mph", "cm/s" };
+        constexpr int kSpeedUnitCount = static_cast<int>(sizeof(kSpeedUnits) / sizeof(kSpeedUnits[0]));
+        std::atomic<int> g_speedUnit{ 0 };
+
+        // The one speed-unit key in the panel file; the floats' keys are in
+        // kPanelFloats below.
+        constexpr const char* kUnitSection = "UI";
+        constexpr const char* kUnitKey     = "SpeedUnit";
+
+        int SpeedUnitIndex(const char* unit)
+        {
+            for (int i = 0; i < kSpeedUnitCount; ++i)
+                if (unit && strcmp(unit, kSpeedUnits[i]) == 0)
+                    return i;
+            return 0;
+        }
+
+        // Every float in BetterDrone-Panel.ini, in PanelFloat order: its
+        // section and key as written to the file, its clamp bounds, and the
+        // value used when the file has none. This one table drives the
+        // migration, the load, and every later lookup of a panel setting, so
+        // a key cannot be typed (or forgotten) anywhere else.
+        struct PanelFloatDef
+        {
+            const char* section;
+            const char* key;
+            float minValue;
+            float maxValue;
+            float defaultValue;
+        };
+
+        // kMinAccelDecel is the floor, not just a fallback: Init clamps
+        // whatever loads (see CachedFloat::Init below), so a value saved as
+        // 0 by a build predating this change comes back up to the floor on
+        // this and every later load, the same way any other stored value
+        // outside its bounds already gets clamped back in range.
+        //
+        // Speed, MaxRadius and MaxHeight default to the game's own values,
+        // which are only known once the drone settings CDO is found
+        // (Config::AdoptGameDefaults). The numbers here are the game's
+        // shipped config values, used only until then.
+        constexpr PanelFloatDef kPanelFloats[] = {
+            { "Drone",    "SpeedPerSec",     kMinSpeedPerSec,     kMaxSpeedPerSec,     400.0f  },
+            { "Drone",    "MaxRadius",       kMinRadius,          kMaxRadiusBound,     4000.0f },
+            { "Drone",    "MaxHeight",       kMinHeight,          kMaxHeightBound,     3500.0f },
+            { "Drone",    "SphereRadius",    kMinSphereRadius,    kMaxSphereRadius,    kMaxSphereRadius },
+            { "Controls", "BoostMultiplier", kMinBoostMultiplier, kMaxBoostMultiplier, 2.0f    },
+            { "Controls", "Acceleration",    kMinAccelDecel,      kMaxAccelDecel,      kDefaultAccelDecel },
+            { "Controls", "Deceleration",    kMinAccelDecel,      kMaxAccelDecel,      kDefaultAccelDecel },
+            { "Audio", DroneAudio::kVolumeKeys[DroneAudio::kVolIdle],     kMinVolume, kMaxVolume, 1.0f },
+            { "Audio", DroneAudio::kVolumeKeys[DroneAudio::kVolMovement], kMinVolume, kMaxVolume, 1.0f },
+            { "Audio", DroneAudio::kVolumeKeys[DroneAudio::kVolRotation], kMinVolume, kMaxVolume, 1.0f },
+            { "Audio", DroneAudio::kVolumeKeys[DroneAudio::kVolStation],  kMinVolume, kMaxVolume, 1.0f },
+        };
+        constexpr int kPanelFloatCount = static_cast<int>(PanelFloat::Count);
+        static_assert(sizeof(kPanelFloats) / sizeof(kPanelFloats[0]) == kPanelFloatCount,
+                      "kPanelFloats needs exactly one row per PanelFloat");
+        static_assert(kPanelFloatCount - static_cast<int>(PanelFloat::IdleVolume) == DroneAudio::kVolCount,
+                      "the volumes must be the last PanelFloat entries, one per DroneAudio::kVolumeKeys");
+
+        const PanelFloatDef& DefOf(PanelFloat id) { return kPanelFloats[static_cast<int>(id)]; }
+
         // Copies one setting out of the loader-managed BetterDrone.ini (read
         // through IPluginConfig, before InitializeFromSchema rewrites that
         // file down to the schema keys) into the panel file.
-        void MigrateFloat(IPluginSelf* self, const char* section, const char* key, float fallback)
+        // A key the old file never had is left out, so it keeps following its
+        // default (for speed and range, the game's own value) instead of
+        // having today's default written down as if the player chose it.
+        void MigrateFloat(IPluginSelf* self, const char* section, const char* key)
         {
-            const float value = self->config->ReadFloat(self, section, key, fallback);
-            PanelWriteFloat(section, key, value);
+            char stored[64] = {};
+            if (!self->config->ReadString(self, section, key, stored, sizeof(stored), "") || stored[0] == '\0')
+                return;
+
+            PanelWriteFloat(section, key, static_cast<float>(atof(stored)));
         }
 
         void MigrateString(IPluginSelf* self, const char* section, const char* key, const char* fallback)
@@ -144,18 +233,10 @@ namespace DroneConfig
             if (PanelConfigExists())
                 return;
 
-            MigrateFloat(self, "Drone", "SpeedPerSec", 1000.0f);
-            MigrateFloat(self, "Drone", "MaxRadius",   5000.0f);
-            MigrateFloat(self, "Drone", "MaxHeight",   2000.0f);
+            for (const PanelFloatDef& def : kPanelFloats)
+                MigrateFloat(self, def.section, def.key);
 
-            MigrateFloat(self, "Controls", "BoostMultiplier", 2.0f);
-            MigrateFloat(self, "Controls", "Acceleration",    kDefaultAccelDecel);
-            MigrateFloat(self, "Controls", "Deceleration",    kDefaultAccelDecel);
-
-            for (const char* key : DroneAudio::kVolumeKeys)
-                MigrateFloat(self, "Audio", key, 1.0f);
-
-            MigrateString(self, "UI", "SpeedUnit", "km/h");
+            MigrateString(self, kUnitSection, kUnitKey, kSpeedUnits[0]);
         }
 
         // Two stale spellings of "no custom key chosen" predate the current
@@ -215,16 +296,20 @@ namespace DroneConfig
         class CachedFloat
         {
         public:
-            void Init(const char* section, const char* key, float minV, float maxV, float loaded)
+            void Init(const char* section, const char* key, float minV, float maxV, float loaded, bool stored)
             {
                 m_section = section;
                 m_key     = key;
                 m_min     = minV;
                 m_max     = maxV;
+                m_stored.store(stored, std::memory_order_relaxed);
                 m_value.store(Clamp(loaded, m_min, m_max), std::memory_order_relaxed);
             }
 
             float Read() const { return m_value.load(std::memory_order_relaxed); }
+
+            // Whether the panel file held this key when it was loaded.
+            bool Stored() const { return m_stored.load(std::memory_order_relaxed); }
 
             float SetLive(float value)
             {
@@ -233,9 +318,14 @@ namespace DroneConfig
                 return value;
             }
 
-            void Persist() const
+            void Persist()
             {
+                // Read the value under the file lock: a concurrent Persist
+                // of this key then writes whatever the cache holds when its
+                // turn comes, never an older value after a newer one.
+                std::lock_guard<std::recursive_mutex> lock(g_panelFileMutex);
                 PanelWriteFloat(m_section, m_key, m_value.load(std::memory_order_relaxed));
+                m_stored.store(true, std::memory_order_relaxed);
             }
 
             float Write(float value)
@@ -251,43 +341,13 @@ namespace DroneConfig
             const char* m_key     = nullptr;
             float m_min = 0.0f;
             float m_max = 0.0f;
+            std::atomic<bool> m_stored{ false };
         };
 
-        CachedFloat g_speedPerSec;
-        CachedFloat g_maxRadius;
-        CachedFloat g_maxHeight;
-        CachedFloat g_boostMultiplier;
-        CachedFloat g_acceleration;
-        CachedFloat g_deceleration;
+        // One CachedFloat per kPanelFloats row, same order.
+        CachedFloat g_panel[kPanelFloatCount];
 
-        constexpr float kMinVolume = 0.0f;
-        constexpr float kMaxVolume = 1.0f;
-
-        // One CachedFloat per DroneAudio::kVolumeKeys entry, same order.
-        CachedFloat g_audioVol[DroneAudio::kVolCount];
-
-        CachedFloat* FindAudioVol(const char* key)
-        {
-            if (!key) return nullptr;
-            for (int v = 0; v < DroneAudio::kVolCount; ++v)
-                if (strcmp(DroneAudio::kVolumeKeys[v], key) == 0)
-                    return &g_audioVol[v];
-            return nullptr;
-        }
-
-        // The panel needs the unit every frame it draws, so it is cached like the
-        // floats rather than read from the file on each call.
-        const char* const kSpeedUnits[] = { "km/h", "mph", "cm/s" };
-        constexpr int kSpeedUnitCount = static_cast<int>(sizeof(kSpeedUnits) / sizeof(kSpeedUnits[0]));
-        std::atomic<int> g_speedUnit{ 0 };
-
-        int SpeedUnitIndex(const char* unit)
-        {
-            for (int i = 0; i < kSpeedUnitCount; ++i)
-                if (unit && strcmp(unit, kSpeedUnits[i]) == 0)
-                    return i;
-            return 0;
-        }
+        CachedFloat& Panel(PanelFloat id) { return g_panel[static_cast<int>(id)]; }
     }
 
     IPluginSelf* Config::s_self = nullptr;
@@ -303,32 +363,17 @@ namespace DroneConfig
         MigrateRenamedKey(s_self, "Controls", "BoostKey",  "Boost Key");
         MigrateBoostKeyIfNeeded(s_self);
 
-        g_speedPerSec.Init("Drone", "SpeedPerSec", kMinSpeedPerSec, kMaxSpeedPerSec,
-            PanelReadFloat("Drone", "SpeedPerSec", 1000.0f));
-        g_maxRadius.Init("Drone", "MaxRadius", kMinRadius, kMaxRadiusBound,
-            PanelReadFloat("Drone", "MaxRadius", 5000.0f));
-        g_maxHeight.Init("Drone", "MaxHeight", kMinHeight, kMaxHeightBound,
-            PanelReadFloat("Drone", "MaxHeight", 2000.0f));
-        g_boostMultiplier.Init("Controls", "BoostMultiplier", kMinBoostMultiplier, kMaxBoostMultiplier,
-            PanelReadFloat("Controls", "BoostMultiplier", 2.0f));
-        // kMinAccelDecel is the floor, not just a fallback: Init clamps
-        // whatever loads (see CachedFloat::Init below), so a value saved as
-        // 0 by a build predating this change comes back up to the floor on
-        // this and every later load, the same way any other stored value
-        // outside its bounds already gets clamped back in range.
-        g_acceleration.Init("Controls", "Acceleration", kMinAccelDecel, kMaxAccelDecel,
-            PanelReadFloat("Controls", "Acceleration", kDefaultAccelDecel));
-        g_deceleration.Init("Controls", "Deceleration", kMinAccelDecel, kMaxAccelDecel,
-            PanelReadFloat("Controls", "Deceleration", kDefaultAccelDecel));
-
-        for (int v = 0; v < DroneAudio::kVolCount; ++v)
+        for (int i = 0; i < kPanelFloatCount; ++i)
         {
-            const char* key = DroneAudio::kVolumeKeys[v];
-            g_audioVol[v].Init("Audio", key, kMinVolume, kMaxVolume, PanelReadFloat("Audio", key, 1.0f));
+            const PanelFloatDef& def = kPanelFloats[i];
+            char stored[64] = {};
+            PanelReadString(def.section, def.key, "", stored, sizeof(stored));
+            g_panel[i].Init(def.section, def.key, def.minValue, def.maxValue,
+                PanelReadFloat(def.section, def.key, def.defaultValue), stored[0] != '\0');
         }
 
         char unit[16] = {};
-        PanelReadString("UI", "SpeedUnit", kSpeedUnits[0], unit, sizeof(unit));
+        PanelReadString(kUnitSection, kUnitKey, kSpeedUnits[0], unit, sizeof(unit));
         g_speedUnit.store(SpeedUnitIndex(unit));
 
         static const ConfigEntry entries[] = {
@@ -337,11 +382,15 @@ namespace DroneConfig
             { "Interaction", "Interact Key",           ConfigValueType::Keybind, "E",         "Key that triggers interaction while the drone is out, matching the game's own interact key.", 0.0f, 0.0f },
             { "Interaction", "Map In Drone Mode",      ConfigValueType::Boolean, "true",      "Opens the map from the drone.", 0.0f, 1.0f },
             { "Interaction", "Map Key",                ConfigValueType::Keybind, "M",         "Key that opens the map while the drone is out. Set it to the game's own map key.", 0.0f, 0.0f },
+            { "Interaction", "Drone Reveals Map",      ConfigValueType::Boolean, "false",     "Flying the drone uncovers the map the way walking does. What it uncovers is saved with your game.", 0.0f, 1.0f },
             // Matches BetterCheats' own ToggleKey default on purpose, so one
             // F10 press opens both panels. The loader dispatches a keypress
             // to every plugin registered on it, not just one, so this is safe.
             { "Controls",    "Toggle Key",             ConfigValueType::Keybind, "F10",        "Key to toggle the BetterDrone menu window", 0.0f, 0.0f },
             { "Controls",    "Boost Key",              ConfigValueType::Keybind, kBoostKeyFollowsSprint, "Key held to boost drone speed, following your Sprint key unless you set one here.", 0.0f, 0.0f },
+            { "Controls",    "Previous Preset Key",    ConfigValueType::Keybind, "Hyphen",    "Key that steps to the next slower speed preset while the drone is out.", 0.0f, 0.0f },
+            { "Controls",    "Next Preset Key",        ConfigValueType::Keybind, "Equals",    "Key that steps to the next faster speed preset while the drone is out.", 0.0f, 0.0f },
+            { "Controls",    "Mining Laser Key",       ConfigValueType::Keybind, "G",         "Key held to mine the ore under the crosshair from the drone, with the mining tool's damage and range. Host and single player only.", 0.0f, 0.0f },
         };
         static const ConfigSchema schema{ entries, static_cast<int>(sizeof(entries) / sizeof(entries[0])) };
 
@@ -368,6 +417,11 @@ namespace DroneConfig
         return s_self ? s_self->config->ReadBool(s_self, "Interaction", "Map In Drone Mode", true) : false;
     }
 
+    bool Config::ReadDroneRevealsMap()
+    {
+        return s_self ? s_self->config->ReadBool(s_self, "Interaction", "Drone Reveals Map", false) : false;
+    }
+
     void Config::ReadMapKey(char* outBuffer, int bufferSize)
     {
         ReadKeybind(s_self, "Interaction", "Map Key", "M", outBuffer, bufferSize);
@@ -378,41 +432,52 @@ namespace DroneConfig
         ReadKeybind(s_self, "Controls", "Toggle Key", "F10", outBuffer, bufferSize);
     }
 
+    void Config::ReadPrevPresetKey(char* outBuffer, int bufferSize)
+    {
+        ReadKeybind(s_self, "Controls", "Previous Preset Key", "Hyphen", outBuffer, bufferSize);
+    }
+
+    void Config::ReadNextPresetKey(char* outBuffer, int bufferSize)
+    {
+        ReadKeybind(s_self, "Controls", "Next Preset Key", "Equals", outBuffer, bufferSize);
+    }
+
+    void Config::ReadMiningLaserKey(char* outBuffer, int bufferSize)
+    {
+        ReadKeybind(s_self, "Controls", "Mining Laser Key", "G", outBuffer, bufferSize);
+    }
+
     void Config::ReadBoostKey(char* outBuffer, int bufferSize)
     {
         ReadKeybind(s_self, "Controls", "Boost Key", kBoostKeyFollowsSprint, outBuffer, bufferSize);
     }
 
-    float Config::ReadSpeedPerSec()               { return g_speedPerSec.Read(); }
-    float Config::SetSpeedPerSecLive(float value)  { return g_speedPerSec.SetLive(value); }
-    void  Config::PersistSpeedPerSec()             { g_speedPerSec.Persist(); }
-    float Config::WriteSpeedPerSec(float value)    { return g_speedPerSec.Write(value); }
+    float Config::ReadPanel(PanelFloat id)                  { return Panel(id).Read(); }
+    float Config::SetPanelLive(PanelFloat id, float value)  { return Panel(id).SetLive(value); }
+    void  Config::PersistPanel(PanelFloat id)               { Panel(id).Persist(); }
+    float Config::WritePanel(PanelFloat id, float value)    { return Panel(id).Write(value); }
 
-    float Config::ReadMaxRadius()               { return g_maxRadius.Read(); }
-    float Config::SetMaxRadiusLive(float value)  { return g_maxRadius.SetLive(value); }
-    void  Config::PersistMaxRadius()             { g_maxRadius.Persist(); }
-    float Config::WriteMaxRadius(float value)    { return g_maxRadius.Write(value); }
+    void Config::AdoptGameDefaults(float speedPerSec, float maxRadius, float maxHeight)
+    {
+        const struct { PanelFloat id; float value; } game[] = {
+            { PanelFloat::SpeedPerSec, speedPerSec },
+            { PanelFloat::MaxRadius,   maxRadius },
+            { PanelFloat::MaxHeight,   maxHeight },
+        };
+        for (const auto& g : game)
+            if (!Panel(g.id).Stored())
+                Panel(g.id).SetLive(g.value);
+    }
 
-    float Config::ReadMaxHeight()               { return g_maxHeight.Read(); }
-    float Config::SetMaxHeightLive(float value)  { return g_maxHeight.SetLive(value); }
-    void  Config::PersistMaxHeight()             { g_maxHeight.Persist(); }
-    float Config::WriteMaxHeight(float value)    { return g_maxHeight.Write(value); }
+    float Config::ReadSpeedPerSec()      { return ReadPanel(PanelFloat::SpeedPerSec); }
+    float Config::ReadMaxRadius()        { return ReadPanel(PanelFloat::MaxRadius); }
+    float Config::ReadMaxHeight()        { return ReadPanel(PanelFloat::MaxHeight); }
+    float Config::ReadSphereRadius()     { return ReadPanel(PanelFloat::SphereRadius); }
+    float Config::ReadBoostMultiplier()  { return ReadPanel(PanelFloat::BoostMultiplier); }
+    float Config::ReadAcceleration()     { return ReadPanel(PanelFloat::Acceleration); }
+    float Config::ReadDeceleration()     { return ReadPanel(PanelFloat::Deceleration); }
 
-    float Config::ReadBoostMultiplier()               { return g_boostMultiplier.Read(); }
-    float Config::SetBoostMultiplierLive(float value)  { return g_boostMultiplier.SetLive(value); }
-    void  Config::PersistBoostMultiplier()             { g_boostMultiplier.Persist(); }
-    float Config::WriteBoostMultiplier(float value)    { return g_boostMultiplier.Write(value); }
-
-    float Config::ReadAcceleration()               { return g_acceleration.Read(); }
-    float Config::SetAccelerationLive(float value)  { return g_acceleration.SetLive(value); }
-    void  Config::PersistAcceleration()             { g_acceleration.Persist(); }
-    float Config::WriteAcceleration(float value)    { return g_acceleration.Write(value); }
-
-    float Config::ReadDeceleration()               { return g_deceleration.Read(); }
-    float Config::SetDecelerationLive(float value)  { return g_deceleration.SetLive(value); }
-    void  Config::PersistDeceleration()             { g_deceleration.Persist(); }
-    float Config::WriteDeceleration(float value)    { return g_deceleration.Write(value); }
-
+    float Config::DefaultBoostMultiplier() { return DefOf(PanelFloat::BoostMultiplier).defaultValue; }
     float Config::DefaultAcceleration() { return kDefaultAccelDecel; }
     float Config::DefaultDeceleration() { return kDefaultAccelDecel; }
 
@@ -426,33 +491,13 @@ namespace DroneConfig
     {
         if (!unit) return;
         const int index = SpeedUnitIndex(unit);
+
+        // Cache and file change together, so two threads picking a unit
+        // leave both on the same one.
+        std::lock_guard<std::recursive_mutex> lock(g_panelFileMutex);
         g_speedUnit.store(index);
-        PanelWriteString("UI", "SpeedUnit", kSpeedUnits[index]);
+        PanelWriteString(kUnitSection, kUnitKey, kSpeedUnits[index]);
     }
 
     float Config::MaxSpeedPerSec() { return kMaxSpeedPerSec; }
-
-    float Config::ReadAudioVolume(const char* key)
-    {
-        CachedFloat* cf = FindAudioVol(key);
-        return cf ? cf->Read() : 1.0f;
-    }
-
-    float Config::SetAudioVolumeLive(const char* key, float value)
-    {
-        CachedFloat* cf = FindAudioVol(key);
-        return cf ? cf->SetLive(value) : Clamp(value, kMinVolume, kMaxVolume);
-    }
-
-    void Config::PersistAudioVolume(const char* key)
-    {
-        if (CachedFloat* cf = FindAudioVol(key))
-            cf->Persist();
-    }
-
-    void Config::WriteAudioVolume(const char* key, float value)
-    {
-        if (CachedFloat* cf = FindAudioVol(key))
-            cf->Write(value);
-    }
 }

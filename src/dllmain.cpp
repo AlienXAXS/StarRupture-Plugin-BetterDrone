@@ -3,6 +3,9 @@
 #include "drone_interact.h"
 #include "drone_wave_patch.h"
 #include "drone_audio.h"
+#include "drone_floor_guard.h"
+#include "drone_laser.h"
+#include "drone_map_marker.h"
 #include "plugin_helpers.h"
 #include <plugin_interface.h>
 #include <windows.h>
@@ -41,9 +44,12 @@ static void OnEngineInit()
     LOG_DEBUG("OnEngineInit: CDO defaults — speed=%.0f maxRadius=%.0f maxHeight=%.0f",
         *g_drone.speedPerSec, *g_drone.maxRadius, *g_drone.maxHeight);
 
+    DroneConfig::Config::AdoptGameDefaults(g_drone.origSpeedPerSec, g_drone.origMaxRadius, g_drone.origMaxHeight);
+
     *g_drone.speedPerSec   = DroneConfig::Config::ReadSpeedPerSec();
     *g_drone.maxRadius     = DroneConfig::Config::ReadMaxRadius();
     *g_drone.maxHeight     = DroneConfig::Config::ReadMaxHeight();
+    RequestSphereRadius(DroneConfig::Config::ReadSphereRadius());
     *g_drone.warningRadius = *g_drone.maxRadius * 0.95f;
     *g_drone.warningHeight = *g_drone.maxHeight * 0.95f;
 
@@ -57,13 +63,20 @@ static void OnEngineInit()
 static void OnEngineTick(float deltaSeconds)
 {
     OnDroneTick(deltaSeconds);
+    TickDroneFloorGuard(deltaSeconds);
     DroneAudio::Tick(deltaSeconds);
+    TickDroneLaser(deltaSeconds);
     TickDroneMenuClose();
+    TickDroneMenuOpen();
+    TickDroneMapMarker(deltaSeconds);
+    TickDronePresetKeys();
 }
 
 // Fires only from the loader's own settings window, for the entries
 // registered in DroneConfig::Config::Initialize. Keybind rebinds and the
-// boolean entries are picked up live wherever they're consulted.
+// boolean entries are picked up live wherever they're consulted, except
+// Drone Reveals Map, which the tick reads from a cache set here. This fires
+// before the loader writes the INI, so the cache takes newValue.
 static void OnConfigChanged(const char* section, const char* key, const char* newValue)
 {
     if (!section || !key)
@@ -78,6 +91,18 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
         LOG_DEBUG("OnConfigChanged: Boost Key rebound to '%s'", newValue ? newValue : "");
         return;
     }
+
+    if (strcmp(section, "Controls") == 0 && strcmp(key, "Mining Laser Key") == 0)
+    {
+        // Re-registered for the same reason as Boost Key: its Released is
+        // registered under the bare base key.
+        RebindDroneLaserKey(g_self, newValue);
+        LOG_DEBUG("OnConfigChanged: Mining Laser Key rebound to '%s'", newValue ? newValue : "");
+        return;
+    }
+
+    if (strcmp(section, "Interaction") == 0 && strcmp(key, "Drone Reveals Map") == 0)
+        SetDroneFogEnabled(newValue && (strcmp(newValue, "1") == 0 || _stricmp(newValue, "true") == 0));
 
     LOG_DEBUG("OnConfigChanged: [%s] %s updated", section, key);
 }
@@ -100,6 +125,9 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
     ResolveWavePatch(self, scanner);
     ResolveDroneInteract(self, scanner);
     ResolveDroneMap(self, scanner);
+    ResolveDroneFog(self, scanner);
+    ResolveDroneBuildMenu(self, scanner);
+    ResolveDroneLaser(self, scanner);
 }
 
 extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
@@ -111,7 +139,10 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     DroneConfig::Config::Initialize(self);
     DroneAudio::Initialize();
     InitGameSessionTracking(self);
+    InitDroneLaser(self);
     InitDroneUI(self);
+    InitDroneMapMarker(self);
+    InitDronePresetKeys(self);
 
     self->hooks->Engine->RegisterOnInit(OnEngineInit);
     self->hooks->Engine->RegisterOnShutdown(OnEngineShutdown);
@@ -120,6 +151,8 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     InitWavePatch();
     InitDroneInteract();
     InitDroneMap();
+    InitDroneFog();
+    InitDroneBuildMenu();
     RegisterBoostKey(self);
 
     if (self->hooks->UI)
@@ -136,10 +169,15 @@ extern "C" __declspec(dllexport) void PluginShutdown()
     LOG_DEBUG("PluginShutdown: restoring CDO defaults and unregistering hooks");
 
     UnregisterBoostKey(g_self);
+    ShutdownDroneLaser(g_self);
     ShutdownDroneInteract();
     ShutdownDroneMap();
+    ShutdownDroneFog();
+    ShutdownDroneBuildMenu();
     ShutdownWavePatch();
     DroneAudio::Shutdown();
+    ShutdownDroneMapMarker(g_self);
+    ShutdownDronePresetKeys(g_self);
     ShutdownDroneUI(g_self);
     ShutdownGameSessionTracking(g_self);
     RestoreCDODefaults();

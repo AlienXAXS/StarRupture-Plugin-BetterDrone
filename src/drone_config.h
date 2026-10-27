@@ -8,6 +8,23 @@ namespace DroneConfig
     // default, the migration, and drone_settings.cpp's registration check.
     constexpr const char* kBoostKeyFollowsSprint = "Sprint";
 
+    // The panel-file floats. Each one's section, key, bounds and default are
+    // typed once, in the table in drone_config.cpp. The four volumes keep
+    // DroneAudio::VolIndex order, so AudioVolumeId(i) is the sound named by
+    // DroneAudio::kVolumeKeys[i].
+    enum class PanelFloat : int
+    {
+        SpeedPerSec, MaxRadius, MaxHeight, SphereRadius,
+        BoostMultiplier, Acceleration, Deceleration,
+        IdleVolume, MovementVolume, RotationVolume, StationVolume,
+        Count
+    };
+
+    constexpr PanelFloat AudioVolumeId(int index)
+    {
+        return static_cast<PanelFloat>(static_cast<int>(PanelFloat::IdleVolume) + index);
+    }
+
     class Config
     {
     public:
@@ -23,7 +40,11 @@ namespace DroneConfig
         static void ReadInteractKey(char* outBuffer, int bufferSize);
         static bool ReadMapInDroneMode();
         static void ReadMapKey(char* outBuffer, int bufferSize);
+        static bool ReadDroneRevealsMap();
         static void ReadToggleKey(char* outBuffer, int bufferSize);
+        static void ReadPrevPresetKey(char* outBuffer, int bufferSize);
+        static void ReadNextPresetKey(char* outBuffer, int bufferSize);
+        static void ReadMiningLaserKey(char* outBuffer, int bufferSize);
 
         // kBoostKeyFollowsSprint means "follow the game's Sprint key"; any
         // other value is a custom combo. Never empty.
@@ -31,41 +52,34 @@ namespace DroneConfig
 
         // Panel-only settings: stored in BetterDrone-Panel.ini, which the
         // loader never rewrites, and cached in memory (loaded once in
-        // Initialize) so the tick path never touches the file. Read* returns
-        // the cache. SetXxxLive clamps and updates the cache only -- for a
-        // slider mid-drag, where the drone should react but a disk write
-        // every frame would not. PersistXxx writes the current cached value
-        // to disk once the edit is done. WriteXxx does both, for a single
-        // action (reset button, preset).
+        // Initialize) so the tick path never touches the file. ReadPanel
+        // returns the cache. SetPanelLive clamps and updates the cache only
+        // -- for a slider mid-drag, where the drone should react but a disk
+        // write every frame would not. PersistPanel writes the current cached
+        // value to disk once the edit is done. WritePanel does both, for a
+        // single action (reset button, preset). These change the stored
+        // value only: they do not apply it to the drone (range requests,
+        // live audio). Call PanelSettings for that; it is what the panel
+        // rows use.
+        static float ReadPanel(PanelFloat id);
+        static float SetPanelLive(PanelFloat id, float value);
+        static void  PersistPanel(PanelFloat id);
+        static float WritePanel(PanelFloat id, float value);
+
+        // Called once the drone settings CDO is found, with the game's own
+        // values read before BetterDrone changed anything. Speed, MaxRadius
+        // and MaxHeight that the panel file does not hold take these as
+        // their value. Cache only: nothing is written to the file, so they
+        // keep following the game until the player sets one.
+        static void AdoptGameDefaults(float speedPerSec, float maxRadius, float maxHeight);
+
         static float ReadSpeedPerSec();
-        static float SetSpeedPerSecLive(float value);
-        static void  PersistSpeedPerSec();
-        static float WriteSpeedPerSec(float value);
-
         static float ReadMaxRadius();
-        static float SetMaxRadiusLive(float value);
-        static void  PersistMaxRadius();
-        static float WriteMaxRadius(float value);
-
         static float ReadMaxHeight();
-        static float SetMaxHeightLive(float value);
-        static void  PersistMaxHeight();
-        static float WriteMaxHeight(float value);
-
+        static float ReadSphereRadius();
         static float ReadBoostMultiplier();
-        static float SetBoostMultiplierLive(float value);
-        static void  PersistBoostMultiplier();
-        static float WriteBoostMultiplier(float value);
-
         static float ReadAcceleration();
-        static float SetAccelerationLive(float value);
-        static void  PersistAcceleration();
-        static float WriteAcceleration(float value);
-
         static float ReadDeceleration();
-        static float SetDecelerationLive(float value);
-        static void  PersistDeceleration();
-        static float WriteDeceleration(float value);
 
         static void  ReadSpeedUnit(char* outBuffer, int bufferSize);
         static void  WriteSpeedUnit(const char* unit);
@@ -73,21 +87,10 @@ namespace DroneConfig
         // Applies to boosted speed too, not just the base setting.
         static float MaxSpeedPerSec();
 
-        // Audio volumes: panel-only settings, one cached float per sound,
-        // keyed by the same strings DroneAudio::kVolumeKeys uses. SetLive
-        // updates the cache only, for a slider mid-drag or the Master Volume
-        // row's live-drag fan-out; Persist writes the current cached value
-        // to disk once the edit is done; Write does both, for a single
-        // action (reset button, Master Volume commit).
-        static float ReadAudioVolume(const char* key);
-        static float SetAudioVolumeLive(const char* key, float value);
-        static void  PersistAudioVolume(const char* key);
-        static void  WriteAudioVolume(const char* key, float value);
-
         // The in-panel defaults for fields with no CDO equivalent (Speed,
-        // MaxRadius and MaxHeight instead reset to DroneSettings::orig*, the
+        // MaxRadius, MaxHeight and SphereRadius instead reset to DroneSettings::orig*, the
         // stock CDO values captured in InitDroneSettings).
-        static float DefaultBoostMultiplier() { return 2.0f; }
+        static float DefaultBoostMultiplier();
 
         // Backed by kDefaultAccelDecel in drone_config.cpp, the one place
         // that value is chosen -- see the comment there for why. Also the

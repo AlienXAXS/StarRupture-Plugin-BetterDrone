@@ -1,0 +1,159 @@
+#include "panel_settings.h"
+#include "drone_audio.h"
+#include "drone_settings.h"
+
+#include <cmath>
+
+namespace PanelSettings
+{
+    using DroneConfig::Config;
+    using DroneConfig::PanelFloat;
+
+    float SetLive(PanelFloat id, float value)
+    {
+        const float applied = Config::SetPanelLive(id, value);
+
+        switch (id)
+        {
+        case PanelFloat::MaxRadius:
+            RequestMaxRadius(applied);
+            break;
+        case PanelFloat::MaxHeight:
+            RequestMaxHeight(applied);
+            break;
+        case PanelFloat::SphereRadius:
+            RequestSphereRadius(applied);
+            break;
+        case PanelFloat::IdleVolume:
+        case PanelFloat::MovementVolume:
+        case PanelFloat::RotationVolume:
+        case PanelFloat::StationVolume:
+            DroneAudio::SetVolume(
+                DroneAudio::kVolumeKeys[static_cast<int>(id) - static_cast<int>(PanelFloat::IdleVolume)], applied);
+            break;
+        default:
+            break;
+        }
+
+        return applied;
+    }
+
+    void Commit(PanelFloat id)
+    {
+        Config::PersistPanel(id);
+    }
+
+    float MasterVolume()
+    {
+        float vols[DroneAudio::kVolCount];
+        for (int i = 0; i < DroneAudio::kVolCount; ++i)
+            vols[i] = Config::ReadPanel(DroneConfig::AudioVolumeId(i));
+
+        float maxV = vols[0];
+        bool allEqual = true;
+        for (int i = 0; i < DroneAudio::kVolCount; ++i)
+        {
+            if (std::fabs(vols[i] - vols[0]) > kActiveEpsilon) allEqual = false;
+            if (vols[i] > maxV) maxV = vols[i];
+        }
+
+        return allEqual ? vols[0] : maxV;
+    }
+
+    // Updates the drone's live audio immediately (an atomic store, same as
+    // a single row's own drag path) and the cache the rows below read from,
+    // so they visibly track a master drag; does not touch BetterDrone-Panel.ini.
+    void SetMasterVolumeLive(float value)
+    {
+        for (int i = 0; i < DroneAudio::kVolCount; ++i)
+            SetLive(DroneConfig::AudioVolumeId(i), value);
+    }
+
+    // Persists all four volumes to BetterDrone-Panel.ini. Called once the
+    // edit is done, not on every drag step; SetMasterVolumeLive already
+    // updated the cache each of those already wrote to.
+    void CommitMasterVolume()
+    {
+        for (int i = 0; i < DroneAudio::kVolCount; ++i)
+            Commit(DroneConfig::AudioVolumeId(i));
+    }
+
+    namespace
+    {
+        float OrGame(float value, float gameValue)
+        {
+            return value == kGameValue ? gameValue : value;
+        }
+    }
+
+    SpeedValues SpeedValuesOf(const SpeedPreset& p)
+    {
+        return { OrGame(p.speedPerSec, g_drone.origSpeedPerSec), p.boostMultiplier, p.acceleration, p.deceleration };
+    }
+
+    RangeValues RangeValuesOf(const RangePreset& p)
+    {
+        return { OrGame(p.maxRadius, g_drone.origMaxRadius), OrGame(p.maxHeight, g_drone.origMaxHeight) };
+    }
+
+    int MatchingSpeedPreset()
+    {
+        const SpeedValues live = {
+            Config::ReadSpeedPerSec(), Config::ReadBoostMultiplier(),
+            Config::ReadAcceleration(), Config::ReadDeceleration() };
+
+        for (int i = 0; i < kSpeedPresetCount; ++i)
+        {
+            if (SpeedValuesEqual(live, SpeedValuesOf(kSpeedPresets[i])))
+                return i;
+        }
+        return -1;
+    }
+
+    int MatchingRangePreset()
+    {
+        const float radius = Config::ReadMaxRadius();
+        const float height = Config::ReadMaxHeight();
+
+        for (int i = 0; i < kRangePresetCount; ++i)
+        {
+            const RangeValues p = RangeValuesOf(kRangePresets[i]);
+            if (std::fabs(radius - p.maxRadius) <= kActiveEpsilon &&
+                std::fabs(height - p.maxHeight) <= kActiveEpsilon)
+                return i;
+        }
+        return -1;
+    }
+
+    void ApplySpeedPreset(const SpeedPreset& preset)
+    {
+        if (!g_drone.valid) return;
+
+        const SpeedValues v = SpeedValuesOf(preset);
+        ApplySpeed(v.speedPerSec, v.boostMultiplier, v.acceleration, v.deceleration);
+    }
+
+    void ApplyRangePreset(const RangePreset& preset)
+    {
+        if (!g_drone.valid) return;
+
+        const RangeValues v = RangeValuesOf(preset);
+        ApplyRange(v.maxRadius, v.maxHeight);
+    }
+
+    void ApplySpeed(float speedPerSec, float boostMultiplier, float acceleration, float deceleration)
+    {
+        Config::WritePanel(PanelFloat::SpeedPerSec, speedPerSec);
+        Config::WritePanel(PanelFloat::BoostMultiplier, boostMultiplier);
+        Config::WritePanel(PanelFloat::Acceleration, acceleration);
+        Config::WritePanel(PanelFloat::Deceleration, deceleration);
+    }
+
+    void ApplyRange(float radius, float height)
+    {
+        radius = Config::WritePanel(PanelFloat::MaxRadius, radius);
+        height = Config::WritePanel(PanelFloat::MaxHeight, height);
+        RequestMaxRadius(radius);
+        RequestMaxHeight(height);
+    }
+}
