@@ -39,8 +39,9 @@ static PluginInfo s_info =
     PLUGIN_INTERFACE_VERSION,
     PLUGIN_TARGET_CLIENT,
     PLUGIN_GAME_BUILT_CL,
-    // TODO: PLUGIN_MAP_MIGRATED is not set yet; it waits on the loader's
-    // admission by built CL and the CI check of the used set.
+    // PLUGIN_MAP_MIGRATED is not set yet: it needs the loader's admission by built
+    // CL and the CI check of the used set. Until then the plugin runs only on
+    // the game build it was compiled for.
     0
 };
 
