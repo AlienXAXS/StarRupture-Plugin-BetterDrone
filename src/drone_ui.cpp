@@ -1146,6 +1146,15 @@ void RenderDronePanel(IModLoaderImGui* ui)
     // render callback caused the close to silently undo itself one frame
     // later. By the time this runs, the loader will simply not have called
     // it at all for a frame where the close already landed.
+    //
+    // Opened from the mod loader's own panel list rather than via
+    // OpenDroneMenu - adopt it so Escape/Q and our state track it too.
+    if (s_self && s_self->hooks && s_self->hooks->UI && !s_menuOpen.exchange(true, std::memory_order_relaxed))
+    {
+        g_closeRequested.store(false, std::memory_order_relaxed);
+        g_inputCaptureToken = s_self->hooks->UI->AcquireInputCapture();
+    }
+
     float avail_x = 0.0f, avail_y = 0.0f;
     ui->GetContentRegionAvail(&avail_x, &avail_y);
 
