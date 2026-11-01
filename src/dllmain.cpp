@@ -39,14 +39,14 @@ static PluginInfo s_info =
     PLUGIN_INTERFACE_VERSION,
     PLUGIN_TARGET_CLIENT,
     PLUGIN_GAME_BUILT_CL,
-    // PLUGIN_MAP_MIGRATED is not set yet: it needs the loader's admission by built
-    // CL and the CI check of the used set. Until then the plugin runs only on
-    // the game build it was compiled for.
-    0
+    PLUGIN_MAP_MIGRATED
 };
 
 static void OnEngineInit()
 {
+    if (!DroneFields::Features::Limits.On())
+        return;
+
     LOG_DEBUG("OnEngineInit: acquiring drone settings CDO");
 
     if (!InitDroneSettings())
@@ -77,15 +77,20 @@ static void OnEngineInit()
 static void OnEngineTick(float deltaSeconds)
 {
     NoteGameThread();
-    OnDroneTick(deltaSeconds);
+    if (DroneFields::Features::Limits.On())
+        OnDroneTick(deltaSeconds);
     TickDroneFloorGuard(deltaSeconds);
     TickDroneHitProbe();
-    DroneAudio::Tick(deltaSeconds);
-    TickDroneLaser(deltaSeconds);
+    if (DroneFields::Features::Audio.On())
+        DroneAudio::Tick(deltaSeconds);
+    if (DroneFields::Features::MiningLaser.On())
+        TickDroneLaser(deltaSeconds);
     TickDroneMenuClose();
     TickDroneMenuOpen();
-    TickDroneMapMarker(deltaSeconds);
-    TickDroneSpeedometer();
+    if (DroneFields::Features::MapMarker.On())
+        TickDroneMapMarker(deltaSeconds);
+    if (DroneFields::Features::Speedometer.On())
+        TickDroneSpeedometer();
     TickDronePresetKeys();
 }
 
@@ -101,6 +106,9 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
 
     if (strcmp(section, "Controls") == 0 && strcmp(key, "Boost Key") == 0)
     {
+        if (!DroneFields::Features::Limits.On())
+            return;
+
         // Re-register from scratch rather than rely on the loader's own
         // live-rebind patch: it matches by exact combo string, and Released
         // is registered under the bare base key, not the full combo.
@@ -111,6 +119,9 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
 
     if (strcmp(section, "Controls") == 0 && strcmp(key, "Mining Laser Key") == 0)
     {
+        if (!DroneFields::Features::MiningLaser.On())
+            return;
+
         // Re-registered for the same reason as Boost Key: its Released is
         // registered under the bare base key.
         RebindDroneLaserKey(g_self, newValue);
@@ -118,7 +129,8 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
         return;
     }
 
-    if (strcmp(section, "Interaction") == 0 && strcmp(key, "Drone Reveals Map") == 0)
+    if (strcmp(section, "Interaction") == 0 && strcmp(key, "Drone Reveals Map") == 0
+        && DroneFields::Features::MapReveal.On())
         SetDroneFogEnabled(newValue && (strcmp(newValue, "1") == 0 || _stricmp(newValue, "true") == 0));
 
     LOG_DEBUG("OnConfigChanged: [%s] %s updated", section, key);
@@ -138,6 +150,8 @@ extern "C" __declspec(dllexport) PluginInfo* GetPluginInfo()
 extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPluginHookScanner* scanner)
 {
     g_self = self;
+
+    DroneFields::Features::Declare(self, scanner);
 
     ResolveWavePatch(self, scanner);
     ResolveDroneInteract(self, scanner);
@@ -159,24 +173,33 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     LOG_DEBUG("PluginInit: registering hooks");
 
     DroneConfig::Config::Initialize(self);
-    DroneAudio::Initialize();
+    if (DroneFields::Features::Audio.On())
+        DroneAudio::Initialize();
     InitGameSessionTracking(self);
-    InitDroneLaser(self);
+    if (DroneFields::Features::MiningLaser.On())
+        InitDroneLaser(self);
     InitDroneUI(self);
-    InitDroneMapMarker(self);
-    InitDroneSpeedometer(self);
+    if (DroneFields::Features::MapMarker.On())
+        InitDroneMapMarker(self);
+    if (DroneFields::Features::Speedometer.On())
+        InitDroneSpeedometer(self);
     InitDronePresetKeys(self);
 
     self->hooks->Engine->RegisterOnInit(OnEngineInit);
     self->hooks->Engine->RegisterOnShutdown(OnEngineShutdown);
     self->hooks->Engine->RegisterOnTick(OnEngineTick);
 
-    InitWavePatch();
-    InitDroneInteract();
-    InitDroneMap();
-    InitDroneFog();
-    InitDroneBuildMenu();
-    RegisterBoostKey(self);
+    InitWavePatch(DroneFields::Features::AlwaysAllow.On(), DroneFields::Features::WaveShelter.On());
+    if (DroneFields::Features::Interaction.On())
+        InitDroneInteract();
+    if (DroneFields::Features::MapOpen.On())
+        InitDroneMap();
+    if (DroneFields::Features::MapReveal.On())
+        InitDroneFog();
+    if (DroneFields::Features::BuildMenu.On())
+        InitDroneBuildMenu();
+    if (DroneFields::Features::Limits.On())
+        RegisterBoostKey(self);
 
     if (self->hooks->UI)
     {
@@ -191,16 +214,25 @@ extern "C" __declspec(dllexport) void PluginShutdown()
 {
     LOG_DEBUG("PluginShutdown: restoring CDO defaults and unregistering hooks");
 
-    UnregisterBoostKey(g_self);
-    ShutdownDroneLaser(g_self);
-    ShutdownDroneInteract();
-    ShutdownDroneMap();
-    ShutdownDroneFog();
-    ShutdownDroneBuildMenu();
+    if (DroneFields::Features::Limits.On())
+        UnregisterBoostKey(g_self);
+    if (DroneFields::Features::MiningLaser.On())
+        ShutdownDroneLaser(g_self);
+    if (DroneFields::Features::Interaction.On())
+        ShutdownDroneInteract();
+    if (DroneFields::Features::MapOpen.On())
+        ShutdownDroneMap();
+    if (DroneFields::Features::MapReveal.On())
+        ShutdownDroneFog();
+    if (DroneFields::Features::BuildMenu.On())
+        ShutdownDroneBuildMenu();
     ShutdownWavePatch();
-    DroneAudio::Shutdown();
-    ShutdownDroneMapMarker(g_self);
-    ShutdownDroneSpeedometer(g_self);
+    if (DroneFields::Features::Audio.On())
+        DroneAudio::Shutdown();
+    if (DroneFields::Features::MapMarker.On())
+        ShutdownDroneMapMarker(g_self);
+    if (DroneFields::Features::Speedometer.On())
+        ShutdownDroneSpeedometer(g_self);
     ShutdownDronePresetKeys(g_self);
     ShutdownDroneUI(g_self);
     ShutdownGameSessionTracking(g_self);

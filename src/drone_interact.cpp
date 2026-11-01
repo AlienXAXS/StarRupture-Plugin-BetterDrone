@@ -808,13 +808,13 @@ void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
     // Optional throughout: a miss leaves the rest of BetterDrone working, which
     // is what the old scan-at-init path did. The loader still lists each miss.
     g_addrTargetsChanged = DroneFields::ResolveFunction(self, scanner,
-        "ACrPlayerControllerBase::OnInteractableTargetsChanged", kTargetsChangedPattern);
+        DroneFields::Keys::TargetsChanged, kTargetsChangedPattern);
     g_addrInteractStarted = DroneFields::ResolveFunction(self, scanner,
-        "ACrPlayerControllerBase::NativeOnInputInteractStarted", kInteractStartedPattern);
+        DroneFields::Keys::InteractStarted, kInteractStartedPattern);
     g_addrInteractCompleted = DroneFields::ResolveFunction(self, scanner,
-        "ACrPlayerControllerBase::NativeOnInputInteractCompleted", kInteractCompletedPattern);
+        DroneFields::Keys::InteractCompleted, kInteractCompletedPattern);
     g_addrInteract = DroneFields::ResolveFunction(self, scanner,
-        "ACrPlayerControllerBase::NativeOnInputInteract", kInteractPattern);
+        DroneFields::Keys::Interact, kInteractPattern);
 }
 
 bool InitDroneInteract()
@@ -912,7 +912,7 @@ void ResolveDroneMap(IPluginSelf* self, IPluginHookScanner* scanner)
         return;
 
     g_addrMapMenu = DroneFields::ResolveFunction(self, scanner,
-        "ACrPlayerControllerBase::NativeOnInputMapMenu", kMapMenuPattern);
+        DroneFields::Keys::MapMenu, kMapMenuPattern);
 }
 
 bool InitDroneMap()
@@ -958,7 +958,7 @@ void ResolveDroneFog(IPluginSelf* self, IPluginHookScanner* scanner)
         return;
 
     g_addrUncoverFog = DroneFields::ResolveFunction(self, scanner,
-        "UCrMapManuSubsystem::UncoverFogOfWar", kUncoverFogPattern);
+        DroneFields::Keys::UncoverFog, kUncoverFogPattern);
 }
 
 bool InitDroneFog()
@@ -995,9 +995,9 @@ void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
         return;
 
     g_addrCancelTool = DroneFields::ResolveFunction(self, scanner,
-        "ACrCharacterPlayerBase::NativeOnWeaponCancelTool", kCancelToolPattern);
+        DroneFields::Keys::CancelTool, kCancelToolPattern);
     g_addrHandleDeactivate = DroneFields::ResolveFunction(self, scanner,
-        "UCrUW_ActivatableWidget::HandleDeactivate", kHandleDeactivatePattern);
+        DroneFields::Keys::HandleDeactivate, kHandleDeactivatePattern);
 }
 
 bool InitDroneBuildMenu()

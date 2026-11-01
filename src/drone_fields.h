@@ -13,6 +13,7 @@
 #include "plugin_helpers.h"
 
 #include <cstdint>
+#include <vector>
 
 // Every member of a game class BetterDrone reads or writes, taken from the
 // loader's map for the running game build (see plugin_map.h). Resolved once in
@@ -170,6 +171,100 @@ namespace DroneFields
 			VeinDataSize);
 	}
 
+	// The map keys of the game functions BetterDrone resolves, so the resolves
+	// and the feature declarations below spell each one once.
+	namespace Keys
+	{
+		inline constexpr const char* MineActor          = "UCrMiningComponent::MineResourceRequest(actor)";
+		inline constexpr const char* MineIsm            = "UCrMiningComponent::MineResourceRequest(ISM)";
+		inline constexpr const char* TargetsChanged     = "ACrPlayerControllerBase::OnInteractableTargetsChanged";
+		inline constexpr const char* InteractStarted    = "ACrPlayerControllerBase::NativeOnInputInteractStarted";
+		inline constexpr const char* InteractCompleted  = "ACrPlayerControllerBase::NativeOnInputInteractCompleted";
+		inline constexpr const char* Interact           = "ACrPlayerControllerBase::NativeOnInputInteract";
+		inline constexpr const char* MapMenu            = "ACrPlayerControllerBase::NativeOnInputMapMenu";
+		inline constexpr const char* UncoverFog         = "UCrMapManuSubsystem::UncoverFogOfWar";
+		inline constexpr const char* CancelTool         = "ACrCharacterPlayerBase::NativeOnWeaponCancelTool";
+		inline constexpr const char* HandleDeactivate   = "UCrUW_ActivatableWidget::HandleDeactivate";
+		inline constexpr const char* CanDroneBeActive   = "ACrCharacterPlayerBase::CanBuildingDroneBeActive";
+		inline constexpr const char* CheckIfInInterior  = "ACrCharacterPlayerBase::CheckIfInInterior";
+	}
+
+	// The parts of BetterDrone that can be off while the rest runs. Each lists
+	// every key it uses, a key two parts use in both. A key stays core only
+	// when the plugin can do nothing without it: the drone, the pilot's status
+	// and dead flag, and the player controller's character. A miss on those
+	// still refuses the plugin. Declared in OnPluginLoadHooks before any key
+	// is resolved. Every entry point of a part checks On(), so
+	// an off part runs nothing and reads none of its keys or config entries.
+	namespace Features
+	{
+		inline PluginMap::Feature MiningLaser{ "mining-laser", "Mining laser",
+			PluginMap::KeysOf(Keys::MineActor, Keys::MineIsm,
+				DroneCamera, GemAttributes, MiningComponent, WeaponSystem, WeaponAttributes, AbilitySystem,
+				HarvesterMiningDamage, FireRateMod, LastEquippedUnarmed, EquippedWeapon, EquippedItemData,
+				MiningTypeDamage, RoundsPerMinute, BaseRange, MaxStack, CurrentlyMinedOre, MinedOreActor,
+				MinedVeinMaterial, MinedVeinData, VeinResource, VeinGrantCount, OreData, OreResource,
+				OreInitMaxCount, OreWeakSpots, OreIsDepleted, OreCurrentCount, OreMaxCount, WeakSpotItems,
+				WeakSpotHealth, WeakSpotCount, WeakSpotResource, InventorySlots, SlotItemId, ItemIdHandle,
+				OreMappingData, PhysMatOreDataMap, InventorySlotSize, WeakSpotSize, VeinDataSize),
+			{ "Controls.Mining Laser Key" } };
+
+		inline PluginMap::Feature MapReveal{ "map-reveal", "Drone uncovers the map",
+			PluginMap::KeysOf(Keys::UncoverFog, GemAttributes, FogUncoverRadius, MinFootstepDistance, FogRadiusMultiplier),
+			{ "Interaction.Drone Reveals Map" } };
+
+		inline PluginMap::Feature MapMarker{ "map-marker", "Drone marker on the map",
+			PluginMap::KeysOf(MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
+				MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint,
+				MarkerColorData, MarkerPlayerColour, MarkerItemSize, MarkerRepresentationSize),
+			{} };
+
+		inline PluginMap::Feature Limits{ "drone-limits", "Drone speed, boost, size and limits",
+			PluginMap::KeysOf(PlacementDeveloperSettings, SpeedPerSec, MaxRadius, WarningRadius, MaxHeight,
+				WarningHeight, SphereRadius, SphereComponent),
+			{ "Controls.Boost Key" } };
+
+		inline PluginMap::Feature SprintKey{ "sprint-key", "Following the game's Sprint key",
+			PluginMap::KeysOf(NativeInputActions, NativeInputAction, NativeInputHandler, NativeInputActionSize),
+			{} };
+
+		inline PluginMap::Feature AlwaysAllow{ "always-allow", "Drone allowed during wave events",
+			PluginMap::KeysOf(Keys::CanDroneBeActive),
+			{ "Drone.Always Allow Drone" } };
+
+		inline PluginMap::Feature WaveShelter{ "wave-shelter", "Drone does not count toward the wave shelter",
+			PluginMap::KeysOf(Keys::CheckIfInInterior, DroneCameraColl, IsSafeInterior),
+			{} };
+
+		inline PluginMap::Feature Interaction{ "drone-interact", "Open containers and doors from the drone",
+			PluginMap::KeysOf(Keys::TargetsChanged, Keys::InteractStarted, Keys::InteractCompleted, Keys::Interact,
+				CurrentInteractableActor, PlayerControlState, DroneCamera),
+			{ "Interaction.Interact In Drone Mode", "Interaction.Interact Key" } };
+
+		inline PluginMap::Feature MapOpen{ "drone-map", "Open the map from the drone",
+			PluginMap::KeysOf(Keys::MapMenu),
+			{ "Interaction.Map In Drone Mode", "Interaction.Map Key" } };
+
+		inline PluginMap::Feature BuildMenu{ "build-menu", "Closing the building menu keeps the drone",
+			PluginMap::KeysOf(Keys::CancelTool, Keys::HandleDeactivate, BuildingMenuPlayer),
+			{} };
+
+		inline PluginMap::Feature Speedometer{ "speedometer", "Speedometer on the drone HUD",
+			PluginMap::KeysOf(HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM),
+			{} };
+
+		inline PluginMap::Feature Audio{ "drone-audio", "Drone sound volumes",
+			PluginMap::KeysOf(IdleSound, MovementSound, RotationSound, StateAudioComponents),
+			{} };
+
+		// Declares them all. Call first in OnPluginLoadHooks.
+		inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
+		{
+			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, Limits, SprintKey,
+				AlwaysAllow, WaveShelter, Interaction, MapOpen, BuildMenu, Speedometer, Audio);
+		}
+	}
+
 	// A game function by its map key, with this plugin's own pattern as the
 	// fallback. Every address BetterDrone resolves is a function entry, so each
 	// request declares PLUGIN_SCAN_FUNCTION_START: some get a detour written
@@ -185,12 +280,7 @@ namespace DroneFields
 	}
 
 	// The member's value, or a fallback when the object is null.
-	template <class T, class Object>
-	T ValueOr(const PluginField<T>& field, const Object* object, T fallback = T{})
-	{
-		const T* at = field.In(static_cast<const void*>(object));
-		return at ? *at : fallback;
-	}
+	using PluginMap::ValueOr;
 
 	// The loader's property reader for Blueprint members, or null.
 	inline const IPluginObjectProperties* ObjectProperties()

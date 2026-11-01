@@ -17,6 +17,11 @@ namespace
     // described below.
     SDK::UInputAction* FindInputActionFor(const SDK::UClass* handlerClass)
     {
+        // The input rows are a feature of their own: off, no sprint or drone
+        // move key can be looked up.
+        if (!DroneFields::Features::SprintKey.On())
+            return nullptr;
+
         auto* objects = SDK::UObject::GObjects.GetTypedPtr();
         if (!objects)
             return nullptr;
