@@ -46,6 +46,10 @@ namespace
     constexpr double kUnitWidthEm   = 3.0;
     constexpr double kTextHeightEm  = 1.5;
 
+    // The width pinned on each of the HUD's digits, in ems of its font: wider
+    // than the widest digit of the proportional font.
+    constexpr double kDigitWidthEm = 0.7;
+
     // Feet in a metre, for the distance and height readouts when the panel's
     // unit is mph.
     constexpr double kFeetPerMetre = 3.280839895;
@@ -129,6 +133,9 @@ namespace
         bool           logged = false;   // one log line per load
         bool           hidden = false;   // the game's elements are hidden, with the opacity each had
         float          opacity[kGameElems] = {};
+        bool           pinned = false;   // the digits have a fixed width, with what each had
+        float          minWidth[kGameElems] = {};
+        SDK::ETextJustify justify[kGameElems] = {};
         bool           measured = false;
         Digits         digits;           // where the readout was when last measured
         SDK::FVector2D measuredIn = {};  // the panel's size then
@@ -448,12 +455,60 @@ namespace
         row.hidden = hide;
     }
 
+    // Gives the readout's digits a fixed width, centred in it. The game lays
+    // the digits out in a box with the reticle, so a digit changing width
+    // (a "1" for an "8") re-centred the box and moved the reticle. False when
+    // nothing changed.
+    bool PinDigits(SDK::UCrUW_BuildingDroneHud* hud, Row which)
+    {
+        FeetRow& row = g_rows[static_cast<int>(which)];
+        if (row.pinned)
+            return false;
+
+        SDK::UTextBlock* elems[kGameElems] = {};
+        RowElems(hud, which, elems);
+        for (int i = 0; i < 4; ++i)
+        {
+            if (!elems[i] || !(elems[i]->Font.Size > 0.0f))
+                continue;
+            row.minWidth[i] = elems[i]->MinDesiredWidth;
+            row.justify[i]  = elems[i]->Justification;
+            elems[i]->SetMinDesiredWidth(static_cast<float>(kDigitWidthEm * elems[i]->Font.Size * 96.0 / 72.0));
+            elems[i]->SetJustification(SDK::ETextJustify::Center);
+        }
+        row.pinned   = true;
+        row.measured = false;
+        return true;
+    }
+
+    // Gives the digits the width and alignment they had.
+    void UnpinDigits(SDK::UCrUW_BuildingDroneHud* hud, Row which)
+    {
+        FeetRow& row = g_rows[static_cast<int>(which)];
+        if (!row.pinned)
+            return;
+
+        SDK::UTextBlock* elems[kGameElems] = {};
+        if (hud)
+            RowElems(hud, which, elems);
+        for (int i = 0; i < 4; ++i)
+        {
+            if (!elems[i])
+                continue;
+            elems[i]->SetMinDesiredWidth(row.minWidth[i]);
+            elems[i]->SetJustification(row.justify[i]);
+        }
+        row.pinned   = false;
+        row.measured = false;
+    }
+
     // Takes our text blocks out of the HUD, if they are still ours, and gives
     // the game its digits back.
     void Detach()
     {
         for (int i = 0; i < kRows; ++i)
         {
+            UnpinDigits(g_hud.Get(), static_cast<Row>(i));
             HideGameDigits(g_hud.Get(), static_cast<Row>(i), false);
             g_rows[i].hidden = false;
         }
@@ -900,6 +955,11 @@ namespace
             if (!Intact(g_speedLine) || !panel)
                 return false;
         }
+
+        // The digits take their fixed width first; their place is measured on
+        // the next sample, once the game has laid them out again.
+        if (PinDigits(hud, Row::Distance) | PinDigits(hud, Row::Height))
+            return true;
 
         // The game hides the readout (a cutscene, a collapsed HUD): the speed
         // goes with it, and is not drawn anywhere else.
