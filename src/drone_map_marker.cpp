@@ -253,8 +253,8 @@ namespace
         __try
         {
             memset(out, 0, sizeof(*out));
-            SDK::ACrCharacterPlayerBase* character = pc ? pc->CrChar : nullptr;
-            SDK::ACrCharacterDroneBase*  drone     = character ? character->BuildingDrone : nullptr;
+            SDK::ACrCharacterPlayerBase* character = DroneFields::ValueOr(DroneFields::CrChar, pc);
+            SDK::ACrCharacterDroneBase*  drone     = DroneFields::ValueOr(DroneFields::BuildingDrone, character);
             if (!drone)
                 return false;
 

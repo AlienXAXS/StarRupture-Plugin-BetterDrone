@@ -276,7 +276,7 @@ namespace
         // The drone has collision of its own and the camera sits inside it;
         // bIgnoreSelf covers only the character. The array is a view over this
         // stack slot, which the engine copies before the call returns.
-        SDK::AActor* ignoreData[1] = { character->BuildingDrone };
+        SDK::AActor* ignoreData[1] = { DroneFields::ValueOr(DroneFields::BuildingDrone, character) };
         const SDK::TArray<SDK::AActor*> ignore(ignoreData, ignoreData[0] ? 1 : 0, 1);
         const SDK::FLinearColor colour{};
 
@@ -852,7 +852,7 @@ namespace
             return;
         }
 
-        if (character->bDead)
+        if (DroneFields::Dead(character))
         {
             StopMining("character dead");
             return;

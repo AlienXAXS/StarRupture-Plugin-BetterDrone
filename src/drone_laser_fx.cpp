@@ -1,4 +1,5 @@
 #include "drone_laser_fx.h"
+#include "drone_fields.h"
 #include "named_object.h"
 #include "object_ref.h"
 #include "plugin_helpers.h"
@@ -110,8 +111,8 @@ namespace
     // The drone camera: the view the laser aims along.
     SDK::USceneComponent* Anchor(SDK::ACrCharacterPlayerBase* character)
     {
-        SDK::ACrCharacterDroneBase* drone = character ? character->BuildingDrone : nullptr;
-        return drone ? drone->DroneCamera : nullptr;
+        SDK::ACrCharacterDroneBase* drone = DroneFields::ValueOr(DroneFields::BuildingDrone, character);
+        return DroneFields::ValueOr(DroneFields::DroneCamera, drone);
     }
 
     // A sound on the drone camera, at an offset (KeepRelativeOffset) or at a
