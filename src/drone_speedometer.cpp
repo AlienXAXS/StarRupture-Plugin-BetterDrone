@@ -46,9 +46,6 @@ namespace
     constexpr double kUnitWidthEm   = 3.0;
     constexpr double kTextHeightEm  = 1.5;
 
-    // A readout this opaque is not still fading in.
-    constexpr float kSettledOpacity = 0.99f;
-
     // Feet in a metre, for the distance and height readouts when the panel's
     // unit is mph.
     constexpr double kFeetPerMetre = 3.280839895;
@@ -95,9 +92,9 @@ namespace
     };
 
     // One readout this plugin adds to the drone HUD: the number, right aligned
-    // to the right edge of the HUD's distance digits, and its unit, left
-    // aligned to where the HUD's own "m" label starts, as the distance row
-    // lays them out.
+    // to the right edge of the HUD readout's digits, and its unit, left
+    // aligned to where the HUD's own "m" label starts, as the HUD's rows lay
+    // them out.
     struct Line
     {
         ObjectRef<SDK::UTextBlock> number;
@@ -135,6 +132,7 @@ namespace
         bool           measured = false;
         Digits         digits;           // where the readout was when last measured
         SDK::FVector2D measuredIn = {};  // the panel's size then
+        float          measuredOpacity = 0.0f;   // and the opacity it was shown at
     };
     FeetRow g_rows[kRows];
 
@@ -627,22 +625,25 @@ namespace
     }
 
     // A readout's place in `panel`. It is measured when the readout is first
-    // seen, again when the panel's size changes, and while the readout is
-    // still fading or sliding in; otherwise the place is kept. The digits the
-    // game shows change width with their value, and following that moved the
-    // text with every change. False until the readout has been laid out.
+    // seen, again when the panel's size changes, and while its opacity is
+    // still changing (fading in); otherwise the place is kept. The digits the
+    // game shows change the row's width with their value, and following that
+    // appears to have moved the text with every change. False until the
+    // readout has been laid out.
     bool PlaceOf(FeetRow& row, SDK::UTextBlock* const* elems, SDK::UWidget* panel, float opacity, Digits* out)
     {
         const SDK::FVector2D size = SDK::USlateBlueprintLibrary::GetLocalSize(panel->GetCachedGeometry());
         if (size.X <= 0.0)
             return false;
 
-        if (!row.measured || opacity < kSettledOpacity || size.X != row.measuredIn.X || size.Y != row.measuredIn.Y)
+        if (!row.measured || std::fabs(opacity - row.measuredOpacity) > 0.005f || size.X != row.measuredIn.X ||
+            size.Y != row.measuredIn.Y)
         {
             if (!DigitsIn(elems, panel, &row.digits))
                 return false;
-            row.measured   = true;
-            row.measuredIn = size;
+            row.measured        = true;
+            row.measuredIn      = size;
+            row.measuredOpacity = opacity;
         }
         *out = row.digits;
         return true;
@@ -702,9 +703,6 @@ namespace
         }
 
         g_hud.Set(hud);
-        g_rows[0].digits     = d;
-        g_rows[0].measured   = true;
-        g_rows[0].measuredIn = SDK::USlateBlueprintLibrary::GetLocalSize(panel->GetCachedGeometry());
 
         if (!g_loggedAttach)
         {
@@ -723,7 +721,7 @@ namespace
 
     // The value a readout shows, in whole metres, from its digits and "m"
     // label. False when they read as anything else.
-    bool GameMetres(SDK::UTextBlock* const* elems, FeetRow& row, long* metres)
+    bool GameMetres(SDK::UTextBlock* const* elems, Row which, long* metres)
     {
         std::string digits;
         for (int i = 0; i < 4; ++i)
@@ -746,9 +744,10 @@ namespace
         if (digits.empty() || (!label.empty() && label[0] >= '0' && label[0] <= '9'))
             return false;
 
+        FeetRow& row = g_rows[static_cast<int>(which)];
         if (!row.logged)
         {
-            LOG_INFO("Speedometer: %s digits '%s' '%s' '%s' '%s', label '%s'", &row == &g_rows[0] ? "distance" : "height",
+            LOG_INFO("Speedometer: %s digits '%s' '%s' '%s' '%s', label '%s'", which == Row::Distance ? "distance" : "height",
                 TextOf(elems[0]).c_str(), TextOf(elems[1]).c_str(), TextOf(elems[2]).c_str(), TextOf(elems[3]).c_str(),
                 label.c_str());
             row.logged = true;
@@ -806,16 +805,18 @@ namespace
     // While the panel's unit is mph a readout (the distance, the height)
     // shows in feet, in text of ours over the HUD's digits, which are hidden;
     // otherwise, or when the digits cannot be read, the HUD's own metres show.
-    void ShowFeet(SDK::UCrUW_BuildingDroneHud* hud, Row which, SDK::UPanelWidget* panel, float opacity)
+    void ShowFeet(SDK::UCrUW_BuildingDroneHud* hud, Row which, SDK::UPanelWidget* panel)
     {
         FeetRow& row = g_rows[static_cast<int>(which)];
         SDK::UTextBlock* elems[kGameElems] = {};
         RowElems(hud, which, elems);
 
+        // This readout's own visibility and opacity, as the distance's are checked.
+        float rowOpacity = 1.0f;
         long metres = 0;
         Digits d;
-        if (DistanceInFeet() && !row.failed && elems[3] && PlaceOf(row, elems, panel, opacity, &d) &&
-            GameMetres(elems, row, &metres))
+        if (DistanceInFeet() && !row.failed && elems[3] && ReadoutShown(elems[3], panel, &rowOpacity) &&
+            PlaceOf(row, elems, panel, rowOpacity, &d) && GameMetres(elems, which, &metres))
         {
             if (!Intact(row.line))
             {
@@ -831,7 +832,7 @@ namespace
                 HideGameDigits(hud, which, true);
                 char number[32];
                 snprintf(number, sizeof(number), "%ld", ThreeFigures(static_cast<float>(metres * kFeetPerMetre)));
-                UpdateLine(row.line, elems, panel, d, d.top, opacity, number, "ft");
+                UpdateLine(row.line, elems, panel, d, d.top, rowOpacity, number, "ft");
                 return;
             }
         }
@@ -930,8 +931,8 @@ namespace
         }
 
         UpdateLine(g_speedLine, elems, panel, d, d.bottom, opacity, number, unit);
-        ShowFeet(hud, Row::Distance, panel, opacity);
-        ShowFeet(hud, Row::Height, panel, opacity);
+        ShowFeet(hud, Row::Distance, panel);
+        ShowFeet(hud, Row::Height, panel);
         return true;
     }
 

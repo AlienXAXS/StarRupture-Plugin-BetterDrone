@@ -256,8 +256,12 @@ namespace DroneFields
 			{} };
 
 		inline PluginMap::Feature Speedometer{ "speedometer", "Speedometer on the drone HUD",
-			PluginMap::KeysOf(HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM,
-				HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM),
+			PluginMap::KeysOf(HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM),
+			{} };
+
+		// Apart from the speedometer: without these keys the height stays in the game's metres.
+		inline PluginMap::Feature SpeedometerHeight{ "speedometer-height", "Height in feet on the drone HUD",
+			PluginMap::KeysOf(HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM),
 			{} };
 
 		inline PluginMap::Feature Audio{ "drone-audio", "Drone sound volumes",
@@ -268,7 +272,7 @@ namespace DroneFields
 		inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
 		{
 			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, Limits, SprintKey,
-				AlwaysAllow, WaveShelter, Interaction, MapOpen, BuildMenu, Speedometer, Audio);
+				AlwaysAllow, WaveShelter, Interaction, MapOpen, BuildMenu, Speedometer, SpeedometerHeight, Audio);
 		}
 	}
 
