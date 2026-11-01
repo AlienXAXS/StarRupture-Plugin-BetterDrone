@@ -1,4 +1,5 @@
 #include "drone_settings.h"
+#include "drone_fields.h"
 #include "drone_config.h"
 #include "drone_interact.h"
 #include "drone_wave_patch.h"
@@ -36,7 +37,11 @@ static PluginInfo s_info =
     "AlienX",
     "Adjust building drone limits, speed boost, and audio via plugin config.",
     PLUGIN_INTERFACE_VERSION,
-    PLUGIN_TARGET_CLIENT
+    PLUGIN_TARGET_CLIENT,
+    PLUGIN_GAME_BUILT_CL,
+    // TODO: PLUGIN_MAP_MIGRATED is not set yet; it waits on the loader's
+    // admission by built CL and the CI check of the used set.
+    0
 };
 
 static void OnEngineInit()
@@ -139,10 +144,15 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
     ResolveDroneFog(self, scanner);
     ResolveDroneBuildMenu(self, scanner);
     ResolveDroneLaser(self, scanner);
+    DroneFields::Resolve(self, scanner);
 }
 
 extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 {
+    // First, before any early return: off its game build the loader refuses a
+    // plugin whose PluginInit did not take the globals.
+    PluginSdkRuntime::Init(self->hooks);
+
     g_self = self;
 
     LOG_DEBUG("PluginInit: registering hooks");

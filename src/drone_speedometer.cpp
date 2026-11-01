@@ -5,6 +5,7 @@
 #include "drone_map_marker.h"
 #include "drone_ui.h"
 #include "object_ref.h"
+#include "drone_fields.h"
 #include "overlay_widget.h"
 #include "plugin_helpers.h"
 #include <Chimera_classes.hpp>
@@ -168,12 +169,12 @@ namespace
                 continue;
 
             auto* hud = static_cast<SDK::UCrUW_BuildingDroneHud*>(obj);
-            if (!ObjectRef<SDK::UCrUW_BuildingDroneHud>(hud).Get() || !hud->DistanceValueU)
+            if (!ObjectRef<SDK::UCrUW_BuildingDroneHud>(hud).Get() || !DroneFields::DistanceU(hud))
                 continue;
 
-            if (hud->PlayerCharacter == character)
+            if (DroneFields::HudPilot(hud) == character)
                 return hud;
-            if (!hud->PlayerCharacter && !unowned)
+            if (!DroneFields::HudPilot(hud) && !unowned)
                 unowned = hud;
         }
         return unowned;
@@ -227,7 +228,9 @@ namespace
             return false;
 
         SDK::UTextBlock* const elems[] = {
-            hud->DistanceValueT, hud->DistanceValueH, hud->DistanceValueD, hud->DistanceValueU, hud->DistanceValueM };
+            DroneFields::ValueOr(DroneFields::HudDistanceT, hud), DroneFields::ValueOr(DroneFields::HudDistanceH, hud),
+            DroneFields::ValueOr(DroneFields::HudDistanceD, hud), DroneFields::DistanceU(hud),
+            DroneFields::ValueOr(DroneFields::HudDistanceM, hud) };
 
         bool any = false;
         *scale = 1.0;
@@ -249,7 +252,7 @@ namespace
 
             if (!any || bottomRight.X > *right)   *right  = bottomRight.X;
             if (!any || bottomRight.Y > *bottom)  *bottom = bottomRight.Y;
-            if (elem == hud->DistanceValueU)      *scale  = (bottomRight.Y - topLeft.Y) / size.Y;
+            if (elem == DroneFields::DistanceU(hud))      *scale  = (bottomRight.Y - topLeft.Y) / size.Y;
             any = true;
         }
         return any;
@@ -363,7 +366,7 @@ namespace
     Attached Attach(SDK::UCrUW_BuildingDroneHud* hud, const char** why)
     {
         *why = "the distance readout is hidden or not laid out yet";
-        SDK::UTextBlock* source = hud->DistanceValueU;
+        SDK::UTextBlock* source = DroneFields::DistanceU(hud);
         float opacity = 1.0f;
         if (!source || !ReadoutShown(source, nullptr, &opacity))
             return Attached::NotYet;
@@ -479,7 +482,7 @@ namespace
             if (g_attachFailed)
                 return false;
 
-            if (!hud || (hud->PlayerCharacter && hud->PlayerCharacter != character))
+            if (!hud || (DroneFields::HudPilot(hud) && DroneFields::HudPilot(hud) != character))
             {
                 g_hud.Reset();
                 hud = nullptr;
@@ -507,7 +510,7 @@ namespace
                 g_attachFailed = result == Attached::Never;
                 if (!g_loggedFallback)
                 {
-                    LogFallback(why, hud ? hud->DistanceValueU : nullptr);
+                    LogFallback(why, hud ? DroneFields::DistanceU(hud) : nullptr);
                     g_loggedFallback = true;
                 }
             }
@@ -519,7 +522,7 @@ namespace
         // goes with it, and is not drawn anywhere else.
         float opacity = 1.0f;
         double right = 0.0, bottom = 0.0, scale = 1.0;
-        if (!ReadoutShown(hud->DistanceValueU, panel, &opacity) || !DigitsIn(hud, panel, &right, &bottom, &scale))
+        if (!ReadoutShown(DroneFields::DistanceU(hud), panel, &opacity) || !DigitsIn(hud, panel, &right, &bottom, &scale))
         {
             ShowText(text, false);
             return true;
@@ -538,14 +541,14 @@ namespace
             g_attachFailed = true;
             if (!g_loggedFallback)
             {
-                LogFallback("the speed text is larger than the room checked under the readout", hud->DistanceValueU);
+                LogFallback("the speed text is larger than the room checked under the readout", DroneFields::DistanceU(hud));
                 g_loggedFallback = true;
             }
             return false;
         }
 
-        if (!SameColour(text->ColorAndOpacity, hud->DistanceValueU->ColorAndOpacity))
-            text->SetColorAndOpacity(hud->DistanceValueU->ColorAndOpacity);
+        if (!SameColour(text->ColorAndOpacity, DroneFields::DistanceU(hud)->ColorAndOpacity))
+            text->SetColorAndOpacity(DroneFields::DistanceU(hud)->ColorAndOpacity);
 
         if (std::fabs(opacity - g_textOpacity) > 0.02f)
         {
@@ -611,7 +614,7 @@ void TickDroneSpeedometer()
 
     SDK::ACrCharacterPlayerBase* character = DroneConfig::Config::ReadSpeedometer() ? LocalPlayerCharacter() : nullptr;
     SDK::ACrCharacterDroneBase* drone =
-        character && character->Status == SDK::EPlayerCharacterStatus::BuildingDrone ? character->BuildingDrone : nullptr;
+        character && DroneFields::InDrone(character) ? DroneFields::ValueOr(DroneFields::BuildingDrone, character) : nullptr;
     if (!drone || !ObjectRef<SDK::ACrCharacterDroneBase>(drone).Get())
     {
         HideAll();

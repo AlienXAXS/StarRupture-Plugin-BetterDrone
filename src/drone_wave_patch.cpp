@@ -1,6 +1,7 @@
 #include "drone_wave_patch.h"
 #include "drone_config.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <plugin_interface.h>
 #include <Chimera_classes.hpp>
 #include <windows.h>
@@ -67,7 +68,7 @@ static bool BodyOverlaps(SDK::ACrCharacterPlayerBase* character, SDK::UPrimitive
 static int DropDroneOnlyInteriors(SDK::ACrCharacterPlayerBase* character, OverlapList* overlaps,
                                   bool& bodyInterior, bool& bodySafe)
 {
-    SDK::USphereComponent* droneSphere = character->DroneCameraColl;
+    SDK::USphereComponent* droneSphere = DroneFields::ValueOr(DroneFields::DroneCameraColl, character);
     int dropped = 0;
     int kept    = 0;
 
@@ -83,7 +84,7 @@ static int DropDroneOnlyInteriors(SDK::ACrCharacterPlayerBase* character, Overla
             }
 
             bodyInterior = true;
-            bodySafe     = bodySafe || static_cast<SDK::UInteriorOverlapComponent*>(comp)->bIsSafeInterior;
+            bodySafe     = bodySafe || DroneFields::ValueOr(DroneFields::IsSafeInterior, static_cast<SDK::UInteriorOverlapComponent*>(comp), false);
         }
 
         overlaps->data[kept++] = comp;
@@ -96,7 +97,7 @@ static int DropDroneOnlyInteriors(SDK::ACrCharacterPlayerBase* character, Overla
 static void __fastcall Detour_CheckIfInInterior(void* thisPtr, OverlapList* overlaps)
 {
     auto* character = static_cast<SDK::ACrCharacterPlayerBase*>(thisPtr);
-    if (!character || !overlaps || character->Status != SDK::EPlayerCharacterStatus::BuildingDrone)
+    if (!character || !overlaps || !DroneFields::InDrone(character))
     {
         g_lastShelterLog = -1;
         g_originalInterior(thisPtr, overlaps);
@@ -141,21 +142,10 @@ void ResolveWavePatch(IPluginSelf* self, IPluginHookScanner* scanner)
     // FUNCTION_START because a detour is written over this address: the loader
     // checks the match is a real function entry with room for the 14-byte jump,
     // rather than taking the pattern's word for it.
-    PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-    req.hookName = "ACrCharacterPlayerBase::CanBuildingDroneBeActive";
-    req.pattern  = kCanBuildingDroneBeActivePattern;
-    req.kind     = PLUGIN_SCAN_FUNCTION_START;
-    req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-
-    g_addr = scanner->Resolve(self, &req);
-
-    PluginScanRequest interiorReq = PLUGIN_SCAN_REQUEST_INIT;
-    interiorReq.hookName = "ACrCharacterPlayerBase::CheckIfInInterior";
-    interiorReq.pattern  = kCheckIfInInteriorPattern;
-    interiorReq.kind     = PLUGIN_SCAN_FUNCTION_START;
-    interiorReq.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-
-    g_addrInterior = scanner->Resolve(self, &interiorReq);
+    g_addr = DroneFields::ResolveFunction(self, scanner,
+        "ACrCharacterPlayerBase::CanBuildingDroneBeActive", kCanBuildingDroneBeActivePattern);
+    g_addrInterior = DroneFields::ResolveFunction(self, scanner,
+        "ACrCharacterPlayerBase::CheckIfInInterior", kCheckIfInInteriorPattern);
 }
 
 static void InitShelterHook()

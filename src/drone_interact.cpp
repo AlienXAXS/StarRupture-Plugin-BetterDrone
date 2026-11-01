@@ -1,5 +1,6 @@
 #include "drone_interact.h"
 #include "drone_config.h"
+#include "drone_fields.h"
 #include "plugin_helpers.h"
 #include <plugin_interface.h>
 #include <Chimera_classes.hpp>
@@ -20,11 +21,10 @@ namespace
     // between the character and a candidate interactable.
     constexpr size_t k_componentToWorldTranslation = 0x210;
 
-    // ACrPlayerControllerBase::PlayerControlState. Not a UProperty, so the
-    // generated SDK leaves it inside Pad_E88 and it has to be reached by
-    // offset; OnInteractableTargetsChanged reads it at 0x1475FB0AA and gates on
-    // it twice, at 0x1475FB0B9 (== Interacting) and 0x1475FB155 (== Deconstruct).
-    constexpr size_t k_pcPlayerControlState = 0xE88;
+    // ACrPlayerControllerBase::PlayerControlState (DroneFields). Not a UProperty,
+    // so the generated SDK leaves it in padding; OnInteractableTargetsChanged
+    // reads it at 0x1475FB0AA and gates on it twice, at 0x1475FB0B9
+    // (== Interacting) and 0x1475FB155 (== Deconstruct).
 
     // ECrPlayerControlState values, from the game's own UEnum. Only the two the
     // drone path has to reconcile are named here.
@@ -95,8 +95,8 @@ namespace
     // The controller's character while it is flying the drone, else null.
     SDK::ACrCharacterPlayerBase* PilotingCharacter(SDK::ACrPlayerControllerBase* pc)
     {
-        SDK::ACrCharacterPlayerBase* character = pc ? pc->CrChar : nullptr;
-        if (!character || character->Status != SDK::EPlayerCharacterStatus::BuildingDrone)
+        SDK::ACrCharacterPlayerBase* character = DroneFields::ValueOr(DroneFields::CrChar, pc);
+        if (!character || !DroneFields::InDrone(character))
             return nullptr;
 
         return character;
@@ -115,7 +115,7 @@ namespace
 
     SDK::ACrPlayerControllerBase* LocalController()
     {
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = PluginSdkRuntime::GetWorld();
         if (!world)
             return nullptr;
 
@@ -186,7 +186,7 @@ namespace
     {
         SDK::ACrCharacterPlayerBase* character = DroneCharacter(static_cast<SDK::ACrPlayerControllerBase*>(pc));
         SDK::USceneComponent*        root      = character ? character->RootComponent : nullptr;
-        SDK::UCameraComponent*       droneCam  = character ? character->DroneCamera   : nullptr;
+        SDK::UCameraComponent*       droneCam  = DroneFields::ValueOr(DroneFields::DroneCamera, character);
 
         if (!root || !droneCam)
         {
@@ -211,15 +211,21 @@ namespace
         // branch, and opening a building UI is an instant interaction, so it
         // never sets PlayerControlState to Interacting and never drops the
         // player out of delete mode.
-        auto*         controlState      = reinterpret_cast<uint8_t*>(pc) + k_pcPlayerControlState;
+        uint8_t* controlState = DroneFields::PlayerControlState.In(pc);
+        auto*    statusAt     = DroneFields::Status.In(character);
+        if (!controlState || !statusAt)
+        {
+            g_origTargetsChanged(pc, newTargets);
+            return;
+        }
         const uint8_t savedControlState = *controlState;
 
         // The original bails out on IsBuildingDroneActive, and ranges every
         // candidate against the character's root component. Hand it a character
         // that is not in drone mode and is standing at the drone's camera, then
         // put both back before anything else can observe them.
-        const SDK::EPlayerCharacterStatus savedStatus = character->Status;
-        character->Status = SDK::EPlayerCharacterStatus::None;
+        const SDK::EPlayerCharacterStatus savedStatus = *statusAt;
+        *statusAt = SDK::EPlayerCharacterStatus::None;
 
         if (savedControlState == k_controlStateDeconstructMode)
             *controlState = k_controlStateNormal;
@@ -230,7 +236,7 @@ namespace
         }
 
         *controlState     = savedControlState;
-        character->Status = savedStatus;
+        *statusAt         = savedStatus;
     }
 
     void __fastcall Detour_NativeOnInputInteractStarted(void* pc)
@@ -261,7 +267,7 @@ namespace
     // Crops and every other target keep the path they had.
     bool IsGatherableTarget(SDK::ACrPlayerControllerBase* pc)
     {
-        SDK::AActor* target = pc->CurrentInteractableActor;
+        SDK::AActor* target = DroneFields::ValueOr(DroneFields::CurrentInteractableActor, pc);
         return target && target->IsA(SDK::ACrGatherableBaseActor::StaticClass());
     }
 
@@ -278,7 +284,7 @@ namespace
 
         g_lastTargetLogMs = now;
 
-        SDK::AActor* target = pc->CurrentInteractableActor;
+        SDK::AActor* target = DroneFields::ValueOr(DroneFields::CurrentInteractableActor, pc);
         LOG_INFO("DroneInteract: interact on %s%s",
                  target ? target->Class->GetName().c_str() : "no target",
                  movedBody ? ", ranged from the drone" : "");
@@ -294,9 +300,10 @@ namespace
         // which checks the range again against the body it holds, refuses,
         // and leaves the plant marked gathered on the client alone.
         std::optional<BodyAtDroneCamera> atDrone;
-        if (character->RootComponent && character->DroneCamera && IsGatherableTarget(pc) &&
+        SDK::UCameraComponent* droneCamera = DroneFields::ValueOr(DroneFields::DroneCamera, character);
+        if (character->RootComponent && droneCamera && IsGatherableTarget(pc) &&
             SDK::UKismetSystemLibrary::IsServer(character))
-            atDrone.emplace(character->RootComponent, character->DroneCamera);
+            atDrone.emplace(character->RootComponent, droneCamera);
 
         if (press)
         {
@@ -326,14 +333,14 @@ namespace
             return;
         }
 
-        SDK::ACrCharacterPlayerBase* character = pc->CrChar;
+        SDK::ACrCharacterPlayerBase* character = DroneFields::ValueOr(DroneFields::CrChar, pc);
         if (!character)
         {
             LogGateOnce("player controller has no CrChar");
             return;
         }
 
-        if (character->Status != SDK::EPlayerCharacterStatus::BuildingDrone)
+        if (!DroneFields::InDrone(character))
         {
             LogGateOnce("character is not in drone mode");
             return;
@@ -345,7 +352,7 @@ namespace
             return;
         }
 
-        if (character->bDead)
+        if (DroneFields::Dead(character))
         {
             LogGateOnce("character is dead");
             return;
@@ -659,7 +666,7 @@ namespace
 
         SDK::ACrPlayerControllerBase* pc        = LocalController();
         SDK::ACrCharacterPlayerBase*  character = PilotingCharacter(pc);
-        if (!character || character->bDead)
+        if (!character || DroneFields::Dead(character))
         {
             g_hasLastReveal = false;
             return;
@@ -667,7 +674,7 @@ namespace
 
         // UncoverFogOfWar reveals for the possessed pawn, which stays the
         // character while the drone is out.
-        SDK::ACrCharacterDroneBase* drone = character->BuildingDrone;
+        SDK::ACrCharacterDroneBase* drone = DroneFields::ValueOr(DroneFields::BuildingDrone, character);
         if (pc->Pawn != static_cast<SDK::APawn*>(character) || !drone)
             return;
 
@@ -676,7 +683,7 @@ namespace
             return;
 
         const SDK::FVector here = drone->K2_GetActorLocation();
-        if (g_hasLastReveal && here.GetDistanceTo(g_lastReveal) <= settings->MinFootstepDistance)
+        if (g_hasLastReveal && here.GetDistanceTo(g_lastReveal) <= DroneFields::ValueOr(DroneFields::MinFootstepDistance, settings))
             return;
 
         // Checked only once the drone has moved far enough to reveal, so it
@@ -694,9 +701,12 @@ namespace
         if (!subsystem)
             return;
 
-        float radius = settings->FogOfWarPlayerUncoverRadius;
-        if (SDK::UCrGemAttributeSet* gems = character->GemAttributes)
-            radius *= gems->FogOfWarRadiusMultiplier.CurrentValue;
+        float radius = DroneFields::ValueOr(DroneFields::FogUncoverRadius, settings);
+        if (SDK::UCrGemAttributeSet* gems = DroneFields::ValueOr(DroneFields::GemAttributes, character))
+        {
+            if (const auto* multiplier = DroneFields::FogRadiusMultiplier.In(gems))
+                radius *= multiplier->CurrentValue;
+        }
 
         const SDK::FVector3f location = { static_cast<float>(here.X),
                                           static_cast<float>(here.Y),
@@ -767,7 +777,7 @@ namespace
 
         SDK::UCommonActivatableWidgetContainerBase* layer = FindMenuLayer(pc);
         SDK::UCrUW_BuildingMenu* menu = layer ? ActiveMenu<SDK::UCrUW_BuildingMenu>(layer) : nullptr;
-        if (!menu || menu->Player != character)
+        if (!menu || DroneFields::ValueOr(DroneFields::BuildingMenuPlayer, menu) != character)
             return nullptr;
 
         return menu;
@@ -790,25 +800,6 @@ namespace
     }
 }
 
-// Every address this file resolves is a function entry, so each request
-// declares PLUGIN_SCAN_FUNCTION_START: three get a detour written over them,
-// and NativeOnInputInteract, the map handler and UncoverFogOfWar are called
-// directly. The loader then checks the match against the executable's
-// exception directory instead of trusting that the bytes lined up -- a
-// pattern that drifted into the middle of some other function is refused
-// rather than used.
-static uintptr_t ResolveFunction(IPluginSelf* self, IPluginHookScanner* scanner,
-                                 const char* hookName, const char* pattern)
-{
-    PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-    req.hookName = hookName;
-    req.pattern  = pattern;
-    req.kind     = PLUGIN_SCAN_FUNCTION_START;
-    req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-
-    return scanner->Resolve(self, &req);
-}
-
 void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
 {
     if (!self || !scanner)
@@ -816,13 +807,13 @@ void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
 
     // Optional throughout: a miss leaves the rest of BetterDrone working, which
     // is what the old scan-at-init path did. The loader still lists each miss.
-    g_addrTargetsChanged = ResolveFunction(self, scanner,
+    g_addrTargetsChanged = DroneFields::ResolveFunction(self, scanner,
         "ACrPlayerControllerBase::OnInteractableTargetsChanged", kTargetsChangedPattern);
-    g_addrInteractStarted = ResolveFunction(self, scanner,
+    g_addrInteractStarted = DroneFields::ResolveFunction(self, scanner,
         "ACrPlayerControllerBase::NativeOnInputInteractStarted", kInteractStartedPattern);
-    g_addrInteractCompleted = ResolveFunction(self, scanner,
+    g_addrInteractCompleted = DroneFields::ResolveFunction(self, scanner,
         "ACrPlayerControllerBase::NativeOnInputInteractCompleted", kInteractCompletedPattern);
-    g_addrInteract = ResolveFunction(self, scanner,
+    g_addrInteract = DroneFields::ResolveFunction(self, scanner,
         "ACrPlayerControllerBase::NativeOnInputInteract", kInteractPattern);
 }
 
@@ -855,7 +846,7 @@ bool InitDroneInteract()
 SDK::ACrCharacterPlayerBase* LocalPlayerCharacter()
 {
     SDK::ACrPlayerControllerBase* pc = LocalController();
-    return pc ? pc->CrChar : nullptr;
+    return DroneFields::ValueOr(DroneFields::CrChar, pc);
 }
 
 SDK::ACrPlayerControllerBase* LocalPlayerController()
@@ -920,7 +911,7 @@ void ResolveDroneMap(IPluginSelf* self, IPluginHookScanner* scanner)
     if (!self || !scanner)
         return;
 
-    g_addrMapMenu = ResolveFunction(self, scanner,
+    g_addrMapMenu = DroneFields::ResolveFunction(self, scanner,
         "ACrPlayerControllerBase::NativeOnInputMapMenu", kMapMenuPattern);
 }
 
@@ -966,7 +957,7 @@ void ResolveDroneFog(IPluginSelf* self, IPluginHookScanner* scanner)
     if (!self || !scanner)
         return;
 
-    g_addrUncoverFog = ResolveFunction(self, scanner,
+    g_addrUncoverFog = DroneFields::ResolveFunction(self, scanner,
         "UCrMapManuSubsystem::UncoverFogOfWar", kUncoverFogPattern);
 }
 
@@ -1003,9 +994,9 @@ void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
     if (!self || !scanner)
         return;
 
-    g_addrCancelTool = ResolveFunction(self, scanner,
+    g_addrCancelTool = DroneFields::ResolveFunction(self, scanner,
         "ACrCharacterPlayerBase::NativeOnWeaponCancelTool", kCancelToolPattern);
-    g_addrHandleDeactivate = ResolveFunction(self, scanner,
+    g_addrHandleDeactivate = DroneFields::ResolveFunction(self, scanner,
         "UCrUW_ActivatableWidget::HandleDeactivate", kHandleDeactivatePattern);
 }
 

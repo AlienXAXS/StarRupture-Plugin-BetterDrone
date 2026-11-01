@@ -3,6 +3,7 @@
 #include "drone_settings.h"
 #include "object_ref.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <Chimera_classes.hpp>
 #include <Engine_classes.hpp>
 #include <cmath>
@@ -203,7 +204,7 @@ namespace
     // having left, so a floor missing after that is really gone.
     bool TrackDrone(SDK::ACrCharacterPlayerBase* character, float deltaSeconds)
     {
-        SDK::UCameraComponent* camera = character->DroneCamera;
+        SDK::UCameraComponent* camera = DroneFields::ValueOr(DroneFields::DroneCamera, character);
         if (!camera)
             return !g_leftStockRange;
 
@@ -363,13 +364,13 @@ void TickDroneFloorGuard(float deltaSeconds)
 {
     SDK::ACrCharacterPlayerBase* character = LocalPlayerCharacter();
     SDK::UCharacterMovementComponent* move = character ? character->CharacterMovement : nullptr;
-    if (!move || character->bDead)
+    if (!move || DroneFields::Dead(character))
     {
         ResetDroneFloorGuard();
         return;
     }
 
-    const bool inDrone = character->Status == SDK::EPlayerCharacterStatus::BuildingDrone;
+    const bool inDrone = DroneFields::InDrone(character);
 
     // A respawned or reloaded character is a different object; whatever was
     // parked no longer applies.
