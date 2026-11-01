@@ -1,5 +1,6 @@
 #include "drone_sprint_key.h"
 #include "drone_key_vk.h"
+#include "drone_fields.h"
 #include <Chimera_classes.hpp>
 #include <EnhancedInput_classes.hpp>
 #include <cstdio>
@@ -32,13 +33,18 @@ namespace
                 continue;
 
             auto* config = static_cast<SDK::UCrInputConfig*>(obj);
-            const int32_t entryCount = config->NativeInputActionsWithHandlers.Num();
+            auto* actions = DroneFields::NativeInputActions.In(config);
+            if (!actions)
+                continue;
+
+            const int32_t entryCount = actions->Num();
             for (int32_t j = 0; j < entryCount; ++j)
             {
-                const SDK::FCrNativeInputAction& entry = config->NativeInputActionsWithHandlers[j];
-                if (entry.InputAction && entry.NativeInputHandler &&
-                    entry.NativeInputHandler->IsA(handlerClass))
-                    return entry.InputAction;
+                const SDK::FCrNativeInputAction& entry = (*actions)[j];
+                SDK::UInputAction*         inputAction = DroneFields::ValueOr(DroneFields::NativeInputAction, &entry);
+                SDK::UCrNativeInputHandler* handler    = DroneFields::ValueOr(DroneFields::NativeInputHandler, &entry);
+                if (inputAction && handler && handler->IsA(handlerClass))
+                    return inputAction;
             }
         }
 
@@ -63,7 +69,7 @@ int ResolveInputHandlerVk(const SDK::UClass* handlerClass, char* outKeyName, siz
 
     try
     {
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = PluginSdkRuntime::GetWorld();
         if (!world)
             return 0;
 

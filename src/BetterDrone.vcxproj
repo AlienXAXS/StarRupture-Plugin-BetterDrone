@@ -129,6 +129,7 @@
   <ItemGroup>
     <ClInclude Include="drone_audio.h" />
     <ClInclude Include="drone_config.h" />
+    <ClInclude Include="drone_fields.h" />
     <ClInclude Include="drone_floor_guard.h" />
     <ClInclude Include="drone_hit_probe.h" />
     <ClInclude Include="drone_interact.h" />

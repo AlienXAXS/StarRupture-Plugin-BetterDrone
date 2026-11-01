@@ -8,6 +8,7 @@
 #include "drone_key_vk.h"
 #include "plugin_helpers.h"
 #include "object_ref.h"
+#include "drone_fields.h"
 #include <AuActorPlacement_classes.hpp>
 #include <Chimera_classes.hpp>
 #include <BP_FloatingDrone_classes.hpp>
@@ -173,7 +174,7 @@ void InitGameSessionTracking(IPluginSelf* self)
 
     try
     {
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = PluginSdkRuntime::GetWorld();
         if (world && world->GetName() == "ChimeraMain")
             g_inGameSession = true;
     }
@@ -203,17 +204,25 @@ bool InitDroneSettings()
         return false;
     }
 
-    g_drone.speedPerSec   = &cdo->BuildingDroneSpeedPerSec;
-    g_drone.maxRadius     = &cdo->BuildingDroneMaxRadius;
-    g_drone.warningRadius = &cdo->BuildingDroneWarningRadius;
-    g_drone.maxHeight     = &cdo->BuildingDroneMaxHeight;
-    g_drone.warningHeight = &cdo->BuildingDroneWarningHeight;
+    g_drone.speedPerSec   = DroneFields::SpeedPerSec.In(cdo);
+    g_drone.maxRadius     = DroneFields::MaxRadius.In(cdo);
+    g_drone.warningRadius = DroneFields::WarningRadius.In(cdo);
+    g_drone.maxHeight     = DroneFields::MaxHeight.In(cdo);
+    g_drone.warningHeight = DroneFields::WarningHeight.In(cdo);
+    const float* sphereRadius = DroneFields::SphereRadius.In(cdo);
+    if (!g_drone.speedPerSec || !g_drone.maxRadius || !g_drone.warningRadius || !g_drone.maxHeight
+        || !g_drone.warningHeight || !sphereRadius)
+    {
+        LOG_WARN("InitDroneSettings: a drone setting did not resolve on this build");
+        g_drone = DroneSettings{};
+        return false;
+    }
     g_drone.origSpeedPerSec   = *g_drone.speedPerSec;
     g_drone.origMaxRadius     = *g_drone.maxRadius;
     g_drone.origWarningRadius = *g_drone.warningRadius;
     g_drone.origMaxHeight     = *g_drone.maxHeight;
     g_drone.origWarningHeight = *g_drone.warningHeight;
-    g_drone.origSphereRadius  = cdo->BuildingDroneSphereRadius;
+    g_drone.origSphereRadius  = *sphereRadius;
     g_drone.valid             = true;
     g_currentEffectiveSpeed   = *g_drone.speedPerSec;
     g_droneSizeCm             = g_drone.origSphereRadius;
@@ -229,8 +238,8 @@ namespace
     SDK::USphereComponent* LiveDroneSphere()
     {
         SDK::ACrCharacterPlayerBase* character = LocalPlayerCharacter();
-        SDK::ACrCharacterDroneBase* drone = character ? character->BuildingDrone : nullptr;
-        return drone ? drone->SphereComponent : nullptr;
+        SDK::ACrCharacterDroneBase* drone = DroneFields::ValueOr(DroneFields::BuildingDrone, character);
+        return DroneFields::ValueOr(DroneFields::SphereComponent, drone);
     }
 
     // Drone Size, applied to the live drone. Game thread only.
@@ -300,6 +309,14 @@ namespace
         return static_cast<SDK::ABP_FloatingDrone_C*>(owner);
     }
 
+    // The drone's body mesh, or null when the drone is null or the Blueprint
+    // has no such member on this build.
+    SDK::UStaticMeshComponent* DroneMeshOf(SDK::ABP_FloatingDrone_C* drone)
+    {
+        SDK::UStaticMeshComponent** at = DroneFields::DroneMesh.In(DroneFields::ObjectProperties(), drone);
+        return at ? *at : nullptr;
+    }
+
     // Gives the mesh back the collision the game gave it. Setting the
     // collision state renames the profile to Custom, so a named profile is
     // put back by name. A mesh that is gone needs nothing.
@@ -323,7 +340,7 @@ namespace
     void ApplyPlateCollision(SDK::USphereComponent* sphere, float radiusCm)
     {
         SDK::ABP_FloatingDrone_C* drone = FloatingDrone(sphere);
-        SDK::UStaticMeshComponent* mesh = drone ? drone->SM_BuidingDrone : nullptr;
+        SDK::UStaticMeshComponent* mesh = DroneMeshOf(drone);
         const bool shrink = mesh && radiusCm < g_drone.origSphereRadius - 0.01f;
 
         if (!shrink || g_plate.mesh.Get() != mesh)
@@ -401,8 +418,9 @@ namespace
         g_sizeProbe.pending = false;
 
         SDK::ABP_FloatingDrone_C* drone = FloatingDrone(sphere);
-        SDK::UStaticMeshComponent* mesh = drone ? drone->SM_BuidingDrone : nullptr;
-        SDK::UCapsuleComponent* capsule = drone ? drone->Capsule : nullptr;
+        SDK::UStaticMeshComponent* mesh = DroneMeshOf(drone);
+        SDK::UCapsuleComponent** capsuleAt = DroneFields::DroneCapsule.In(DroneFields::ObjectProperties(), drone);
+        SDK::UCapsuleComponent* capsule = capsuleAt ? *capsuleAt : nullptr;
         float capsuleRadius = 0.0f, capsuleHalfHeight = 0.0f;
         if (capsule)
             capsule->GetScaledCapsuleSize(&capsuleRadius, &capsuleHalfHeight);
@@ -496,7 +514,7 @@ void UpdateActiveDrones()
             continue;
 
         auto* drone = static_cast<SDK::ACrCharacterDroneBase*>(obj);
-        SDK::UAuActorPlacementDeveloperSettings* settings = drone->PlacementDeveloperSettings;
+        SDK::UAuActorPlacementDeveloperSettings* settings = DroneFields::ValueOr(DroneFields::PlacementDeveloperSettings, drone);
         if (!settings)
         {
             LOG_DEBUG("UpdateActiveDrones: drone instance has null PlacementDeveloperSettings, skipping");
@@ -505,18 +523,27 @@ void UpdateActiveDrones()
 
         ++found;
 
+        float* speedAt         = DroneFields::SpeedPerSec.In(settings);
+        float* maxRadiusAt     = DroneFields::MaxRadius.In(settings);
+        float* warningRadiusAt = DroneFields::WarningRadius.In(settings);
+        float* maxHeightAt     = DroneFields::MaxHeight.In(settings);
+        float* warningHeightAt = DroneFields::WarningHeight.In(settings);
+
         // Already written through the CDO.
-        if (&settings->BuildingDroneSpeedPerSec == g_drone.speedPerSec)
+        if (speedAt == g_drone.speedPerSec)
         {
             ++sharedCdo;
             continue;
         }
 
-        settings->BuildingDroneSpeedPerSec      = *g_drone.speedPerSec;
-        settings->BuildingDroneMaxRadius        = *g_drone.maxRadius;
-        settings->BuildingDroneWarningRadius    = *g_drone.warningRadius;
-        settings->BuildingDroneMaxHeight        = *g_drone.maxHeight;
-        settings->BuildingDroneWarningHeight    = *g_drone.warningHeight;
+        if (!speedAt || !maxRadiusAt || !warningRadiusAt || !maxHeightAt || !warningHeightAt)
+            continue;
+
+        *speedAt         = *g_drone.speedPerSec;
+        *maxRadiusAt     = *g_drone.maxRadius;
+        *warningRadiusAt = *g_drone.warningRadius;
+        *maxHeightAt     = *g_drone.maxHeight;
+        *warningHeightAt = *g_drone.warningHeight;
         ++updated;
     }
 

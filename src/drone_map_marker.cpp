@@ -3,6 +3,7 @@
 #include "drone_marker_icon.h"
 #include "overlay_widget.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <plugin_interface.h>
 #include <Chimera_classes.hpp>
 #include <ChimeraUI_classes.hpp>
@@ -173,9 +174,15 @@ namespace
         *agreed  = 0;
         __try
         {
-            auto& widgets = area->MapMenuMassMarkers;
+            auto* widgetsAt   = DroneFields::MapMassMarkers.In(area);
+            auto* containerAt = DroneFields::BuildingsMarkers.In(helper);
+            auto* dataAt      = containerAt ? DroneFields::BuildingsMarkerData.In(containerAt) : nullptr;
+            if (!widgetsAt || !dataAt)
+                return;
+
+            auto& widgets = *widgetsAt;
             const int32_t allocated = widgets.NumAllocated();
-            auto& data = helper->BuildingsMarkerDataContainer.BuildingsMarkerData;
+            auto& data = *dataAt;
             const int32_t dataNum = data.Num();
             if (allocated < 0 || allocated > kMaxSaneCount || dataNum < 0 || dataNum > kMaxSaneCount)
                 return;
@@ -198,10 +205,15 @@ namespace
                     for (int32_t d = 0; d < dataNum; ++d)
                     {
                         const SDK::FBuildingMarkerDataFastArrayItem& b = data[d];
-                        if (b.BuildingHandle.Index != handle.Index || b.BuildingHandle.SerialNumber != handle.SerialNumber)
+                        const auto* bHandle  = DroneFields::MarkerBuildingHandle.In(&b);
+                        const auto* location = DroneFields::MarkerLocation.In(&b);
+                        auto*       marker   = DroneFields::MarkerWidget.In(&widgets[i].Value());
+                        if (!bHandle || !location || !marker)
+                            continue;
+                        if (bHandle->Index != handle.Index || bHandle->SerialNumber != handle.SerialNumber)
                             continue;
 
-                        const int r = CompareReference(widgets[i].Value().Marker, b.Location.X, b.Location.Y, ctx, t);
+                        const int r = CompareReference(*marker, location->X, location->Y, ctx, t);
                         if (r >= 0)
                         {
                             ++*checked;
@@ -241,8 +253,8 @@ namespace
         __try
         {
             memset(out, 0, sizeof(*out));
-            SDK::ACrCharacterPlayerBase* character = pc ? pc->CrChar : nullptr;
-            SDK::ACrCharacterDroneBase*  drone     = character ? character->BuildingDrone : nullptr;
+            SDK::ACrCharacterPlayerBase* character = DroneFields::ValueOr(DroneFields::CrChar, pc);
+            SDK::ACrCharacterDroneBase*  drone     = DroneFields::ValueOr(DroneFields::BuildingDrone, character);
             if (!drone)
                 return false;
 
@@ -261,11 +273,11 @@ namespace
 
     SDK::ACrMapMenuDataReplicationHelper* ReplicationHelper()
     {
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = PluginSdkRuntime::GetWorld();
         if (!world || !world->GameState || !world->GameState->IsA(SDK::ACrGameStateBase::StaticClass()))
             return nullptr;
 
-        return static_cast<SDK::ACrGameStateBase*>(world->GameState)->MapMenuDataReplicationHelper;
+        return DroneFields::ValueOr(DroneFields::MapDataHelper, static_cast<SDK::ACrGameStateBase*>(world->GameState));
     }
 
     // The colour of the local player's arrow: MarkerPlayer in the map's marker
@@ -277,13 +289,18 @@ namespace
     {
         __try
         {
-            SDK::UCrMapMenuMarkerDefaultColorData* colours = settings->MarkerStatusesColorData.Get();
+            auto* soft = DroneFields::MarkerColorData.In(settings);
+            SDK::UCrMapMenuMarkerDefaultColorData* colours = soft ? soft->Get() : nullptr;
             if (!colours || !colours->IsA(SDK::UCrMapMenuMarkerDefaultColorData::StaticClass()))
                 return false;
 
-            linearRgb[0] = colours->MarkerPlayer.R;
-            linearRgb[1] = colours->MarkerPlayer.G;
-            linearRgb[2] = colours->MarkerPlayer.B;
+            const auto* player = DroneFields::MarkerPlayerColour.In(colours);
+            if (!player)
+                return false;
+
+            linearRgb[0] = player->R;
+            linearRgb[1] = player->G;
+            linearRgb[2] = player->B;
             return true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
@@ -341,9 +358,12 @@ namespace
         }
 
         SDK::UCrUW_MapMenu* map = ActiveLocalMap();
-        SDK::UCrUW_MapMenuMapArea* area = map ? map->MapMenuMapArea : nullptr;
+        SDK::UCrUW_MapMenuMapArea* area = DroneFields::ValueOr(DroneFields::MapMenuMapArea, map);
         SDK::UCrMapMenuDevSettings* settings = SDK::UCrMapMenuDevSettings::GetDefaultObj();
-        if (!area || !area->MapMenuTerrain || !area->CanvasPanelMapArea || !settings)
+        auto* terrainWidget = DroneFields::ValueOr(DroneFields::MapTerrain, area);
+        auto* canvasWidget  = DroneFields::ValueOr(DroneFields::MapCanvasPanel, area);
+        const auto* pivot   = DroneFields::MapPivotPoint.In(settings);
+        if (!area || !terrainWidget || !canvasWidget || !pivot)
         {
             Hide();
             return;
@@ -352,14 +372,14 @@ namespace
         SDK::ACrPlayerControllerBase* pc = LocalPlayerController();
         DroneState drone;
         Geo terrain, canvas;
-        if (!ReadDrone(pc, &drone) || !SampleGeo(area->MapMenuTerrain, pc, &terrain) ||
-            !SampleGeo(area->CanvasPanelMapArea, pc, &canvas) || !LaidOut(terrain) || !LaidOut(canvas))
+        if (!ReadDrone(pc, &drone) || !SampleGeo(terrainWidget, pc, &terrain) ||
+            !SampleGeo(canvasWidget, pc, &canvas) || !LaidOut(terrain) || !LaidOut(canvas))
         {
             Hide();
             return;
         }
 
-        const Transform t = MakeTransform(terrain, settings->MapAreaPivotPoint.X, settings->MapAreaPivotPoint.Y);
+        const Transform t = MakeTransform(terrain, pivot->X, pivot->Y);
 
         // Hidden when markers the game placed are not where the transform says;
         // with none to compare against, the transform stands.

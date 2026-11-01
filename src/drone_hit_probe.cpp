@@ -3,6 +3,7 @@
 #include "drone_key_vk.h"
 #include "drone_sprint_key.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <BP_FloatingDrone_classes.hpp>
 #include <Chimera_classes.hpp>
 #include <Engine_classes.hpp>
@@ -361,15 +362,15 @@ namespace
 void TickDroneHitProbe()
 {
     SDK::ACrCharacterPlayerBase* character = LocalPlayerCharacter();
-    const bool inDrone = character && character->Status == SDK::EPlayerCharacterStatus::BuildingDrone;
+    const bool inDrone = character && DroneFields::InDrone(character);
     if (inDrone && !g_wasInDrone)
         StartLaunch();
     g_wasInDrone = inDrone;
     if (!inDrone)
         return;
 
-    SDK::ACrCharacterDroneBase* drone = character->BuildingDrone;
-    SDK::USphereComponent* sphere = drone ? drone->SphereComponent : nullptr;
+    SDK::ACrCharacterDroneBase* drone = DroneFields::ValueOr(DroneFields::BuildingDrone, character);
+    SDK::USphereComponent* sphere = DroneFields::ValueOr(DroneFields::SphereComponent, drone);
     if (!sphere)
         return;
 
@@ -424,7 +425,9 @@ void TickDroneHitProbe()
     // The mesh is wider than a shrunken sphere: sweep its bounds as well.
     if (!up || !drone->IsA(SDK::ABP_FloatingDrone_C::StaticClass()))
         return;
-    SDK::UStaticMeshComponent* mesh = static_cast<SDK::ABP_FloatingDrone_C*>(drone)->SM_BuidingDrone;
+    SDK::UStaticMeshComponent** meshAt = DroneFields::DroneMesh.In(
+        DroneFields::ObjectProperties(), static_cast<SDK::ABP_FloatingDrone_C*>(drone));
+    SDK::UStaticMeshComponent* mesh = meshAt ? *meshAt : nullptr;
     if (!mesh)
         return;
 

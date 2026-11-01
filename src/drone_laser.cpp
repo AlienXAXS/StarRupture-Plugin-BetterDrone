@@ -9,6 +9,7 @@
 #include "named_object.h"
 #include "object_ref.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <plugin_interface.h>
 #include <Chimera_classes.hpp>
 #include <Engine_classes.hpp>
@@ -275,7 +276,7 @@ namespace
         // The drone has collision of its own and the camera sits inside it;
         // bIgnoreSelf covers only the character. The array is a view over this
         // stack slot, which the engine copies before the call returns.
-        SDK::AActor* ignoreData[1] = { character->BuildingDrone };
+        SDK::AActor* ignoreData[1] = { DroneFields::ValueOr(DroneFields::BuildingDrone, character) };
         const SDK::TArray<SDK::AActor*> ignore(ignoreData, ignoreData[0] ? 1 : 0, 1);
         const SDK::FLinearColor colour{};
 
@@ -336,10 +337,17 @@ namespace
     // started.
     bool StillMining(SDK::UCrMiningComponent* comp)
     {
-        const SDK::FCrOreMiningState& state = comp->CurrentlyMinedOre;
+        const auto* state = DroneFields::CurrentlyMinedOre.In(comp);
+        if (!state)
+            return false;
+
         if (g_s.kind == OreKind::Actor)
-            return state.OreActor && state.OreActor == g_s.ore.Get();
-        return state.InfiniteOrePhysicalMaterial && state.InfiniteOrePhysicalMaterial == g_s.vein.Get();
+        {
+            SDK::ACrOreActor* mined = DroneFields::ValueOr(DroneFields::MinedOreActor, state);
+            return mined && mined == g_s.ore.Get();
+        }
+        SDK::UPhysicalMaterial* material = DroneFields::ValueOr(DroneFields::MinedVeinMaterial, state);
+        return material && material == g_s.vein.Get();
     }
 
     // The mining damage multiplier the stock tool's damage carries:
@@ -348,8 +356,9 @@ namespace
     // out, as the laser drives neither.
     float DamageMultiplier(SDK::ACrCharacterPlayerBase* character)
     {
-        SDK::UCrGemAttributeSet* gems = character->GemAttributes;
-        return gems ? gems->HarvesterMiningDamageMultiplier.CurrentValue : 1.0f;
+        SDK::UCrGemAttributeSet* gems = DroneFields::ValueOr(DroneFields::GemAttributes, character);
+        const auto* multiplier = DroneFields::HarvesterMiningDamage.In(gems);
+        return multiplier ? multiplier->CurrentValue : 1.0f;
     }
 
     // Whether the player's ability system carries the mining tool's
@@ -361,11 +370,12 @@ namespace
     {
         auto* toolActor = static_cast<SDK::ABP_MiningToolActor_C*>(
             g_s.toolActor.Resolve(SDK::ACrWeaponActor::StaticClass()));
-        SDK::UCrAbilitySystemComponent* abilities = character->AbilitySystem;
-        if (!toolActor || !abilities || toolActor->OverheatTag.TagName.IsNone())
+        SDK::UCrAbilitySystemComponent* abilities = DroneFields::ValueOr(DroneFields::AbilitySystem, character);
+        const SDK::FGameplayTag* overheatTag = DroneFields::OverheatTag.In(DroneFields::ObjectProperties(), toolActor);
+        if (!toolActor || !abilities || !overheatTag || overheatTag->TagName.IsNone())
             return false;
 
-        return abilities->GetGameplayTagCount(toolActor->OverheatTag) > 0;
+        return abilities->GetGameplayTagCount(*overheatTag) > 0;
     }
 
     // Cheat.UnlimitedWeaponHeat, the tag the tool's heating effect requires
@@ -381,7 +391,7 @@ namespace
         if (g_unlimitedHeatTag.TagName.IsNone())
             g_unlimitedHeatTag.TagName = SDK::BasicFilesImplUtils::StringToName(L"Cheat.UnlimitedWeaponHeat");
 
-        SDK::UCrAbilitySystemComponent* abilities = character ? character->AbilitySystem : nullptr;
+        SDK::UCrAbilitySystemComponent* abilities = DroneFields::ValueOr(DroneFields::AbilitySystem, character);
         return abilities && !g_unlimitedHeatTag.TagName.IsNone()
             && abilities->GetGameplayTagCount(g_unlimitedHeatTag) > 0;
     }
@@ -397,13 +407,15 @@ namespace
 
         auto* tool = static_cast<SDK::UCrWeaponItemDataBase*>(
             g_s.toolData.Resolve(SDK::UCrWeaponItemDataBase::StaticClass()));
-        SDK::UCrWeaponComponent*    weapons    = character->WeaponSystem;
-        SDK::UCrWeaponAttributeSet* attributes = character->WeaponAttributes;
-        if (!tool || !weapons || !attributes || weapons->LastEquippedUnarmed
-            || weapons->EquippedWeapon.ItemDataLoaded != tool)
+        SDK::UCrWeaponComponent*    weapons    = DroneFields::ValueOr(DroneFields::WeaponSystem, character);
+        SDK::UCrWeaponAttributeSet* attributes = DroneFields::ValueOr(DroneFields::WeaponAttributes, character);
+        const auto* equipped = DroneFields::EquippedWeapon.In(weapons);
+        const auto* modData  = DroneFields::FireRateMod.In(attributes);
+        if (!tool || !equipped || !modData || DroneFields::ValueOr(DroneFields::LastEquippedUnarmed, weapons, false)
+            || DroneFields::ValueOr(DroneFields::EquippedItemData, equipped) != tool)
             return;
 
-        const float mod = attributes->FireRateModMultiplier.CurrentValue;
+        const float mod = modData->CurrentValue;
         if (mod > 0.0f && mod < 1000.0f)
             g_s.drillFireRateMod = mod;
     }
@@ -450,11 +462,16 @@ namespace
         if (!inventory)
             return true;
 
+        const auto* slots = DroneFields::InventorySlots.In(inventory);
+        if (!slots)
+            return true;
+
         int64_t emptySlots = 0;
-        for (int32_t i = 0; i < inventory->Slots.Num(); ++i)
+        for (int32_t i = 0; i < slots->Num(); ++i)
         {
-            const SDK::FGuid& id = inventory->Slots[i].ItemId.Handle;
-            if ((id.A | id.B | id.C | id.D) == 0)
+            const auto* itemId = DroneFields::SlotItemId.In(&(*slots)[i]);
+            const SDK::FGuid* id = itemId ? DroneFields::ItemIdHandle.In(itemId) : nullptr;
+            if (id && (id->A | id->B | id->C | id->D) == 0)
                 ++emptySlots;
         }
 
@@ -466,7 +483,8 @@ namespace
             if (!item)
                 continue;
 
-            const int64_t stack     = item->MaxStack > 1 ? item->MaxStack : 1;
+            const int64_t maxStack  = DroneFields::ValueOr(DroneFields::MaxStack, item, 0);
+            const int64_t stack     = maxStack > 1 ? maxStack : 1;
             const int64_t room      = amountCanAdd(inventory, item, INT32_MAX);
             const int64_t inStacks  = room - emptySlots * stack;
             const int64_t remaining = grant.count - (inStacks > 0 ? inStacks : 0);
@@ -486,17 +504,27 @@ namespace
     {
         std::vector<Grant> grants;
         auto* oreActor = static_cast<SDK::ACrOreActor*>(ore);
-        if (oreActor->OreData.bIsDepleted || oreActor->OreData.CurrentResourceCount <= 0)
+        const auto* runtime = DroneFields::OreData.In(oreActor);
+        if (!runtime || DroneFields::ValueOr(DroneFields::OreIsDepleted, runtime, false)
+            || DroneFields::ValueOr(DroneFields::OreCurrentCount, runtime, 0) <= 0)
             return grants;
 
-        AddGrant(grants, oreActor->Resource, oreActor->OreData.MaxResourceCount);
+        AddGrant(grants, DroneFields::ValueOr(DroneFields::OreResource, oreActor),
+            DroneFields::ValueOr(DroneFields::OreMaxCount, runtime, 0));
 
-        const auto& spots = oreActor->WeakSpotsDataContainer.Items;
+        const auto* container = DroneFields::OreWeakSpots.In(oreActor);
+        const auto* spotsAt   = container ? DroneFields::WeakSpotItems.In(container) : nullptr;
+        if (!spotsAt)
+            return grants;
+
+        const auto& spots = *spotsAt;
+        const int64_t initMax = DroneFields::ValueOr(DroneFields::OreInitMaxCount, oreActor, 0);
         for (int32_t i = 0; i < spots.Num(); ++i)
         {
             const SDK::FCrWeakSpotRuntimeData& spot = spots[i];
-            const int64_t held = spot.CurrentMiningHealth > 0.0f ? spot.ResourceCount : 0;
-            AddGrant(grants, spot.Resource, held + oreActor->InitMaxCount);
+            const int64_t held = DroneFields::ValueOr(DroneFields::WeakSpotHealth, &spot, 0.0f) > 0.0f
+                ? DroneFields::ValueOr(DroneFields::WeakSpotCount, &spot, 0) : 0;
+            AddGrant(grants, DroneFields::ValueOr(DroneFields::WeakSpotResource, &spot), held + initMax);
         }
         return grants;
     }
@@ -511,7 +539,8 @@ namespace
     bool BagHasRoomForVein(SDK::ACrCharacterPlayerBase* character, const SDK::FCrInfiniteOreData& data)
     {
         std::vector<Grant> grants;
-        AddGrant(grants, data.Resource, data.GrantingMomentResourceCount);
+        AddGrant(grants, DroneFields::ValueOr(DroneFields::VeinResource, &data),
+            DroneFields::ValueOr(DroneFields::VeinGrantCount, &data, 0));
         return BagHasRoom(character, grants);
     }
 
@@ -522,12 +551,13 @@ namespace
     {
         auto* ores = static_cast<SDK::UCrOreSubsystem*>(
             SDK::USubsystemBlueprintLibrary::GetWorldSubsystem(character, SDK::UCrOreSubsystem::StaticClass()));
-        SDK::UCrInfiniteOrePhysMatData* mapping = ores ? ores->InfiniteOrePhysMatMappingData : nullptr;
-        if (!mapping)
+        SDK::UCrInfiniteOrePhysMatData* mapping = DroneFields::ValueOr(DroneFields::OreMappingData, ores);
+        auto* veinsAt = DroneFields::PhysMatOreDataMap.In(mapping);
+        if (!veinsAt)
             return nullptr;
 
         // Not const: the SDK's const TMap indexer does not compile.
-        auto& veins = mapping->PhysMatOreDataMap;
+        auto& veins = *veinsAt;
         for (int32_t i = 0; i < veins.NumAllocated(); ++i)
         {
             if (veins.IsValidIndex(i) && veins[i].Key() == material)
@@ -546,7 +576,9 @@ namespace
             return !ore || BagHasRoomForOre(character, ore);
         }
 
-        return BagHasRoomForVein(character, comp->CurrentlyMinedOre.InfiniteOreData);
+        const auto* state = DroneFields::CurrentlyMinedOre.In(comp);
+        const auto* vein  = state ? DroneFields::MinedVeinData.In(state) : nullptr;
+        return !vein || BagHasRoomForVein(character, *vein);
     }
 
     // Whether a new target can be started: both kinds can grant on the
@@ -606,21 +638,24 @@ namespace
         g_s.comp.Set(comp);
         g_s.mining = false;
 
-        const SDK::FCrOreMiningState& state = comp->CurrentlyMinedOre;
+        const auto* state = DroneFields::CurrentlyMinedOre.In(comp);
+        if (!state)
+            return;
+
         bool took = false;
 
         if (aim.kind == OreKind::Actor)
         {
             // No weak spot: the socket is NAME_None and the flag false.
             reinterpret_cast<MiningNatives::MineActorFn>(g_addrMineActor)(comp, aim.ore, 0, damage, interval, false);
-            took = state.OreActor == aim.ore;
+            took = DroneFields::ValueOr(DroneFields::MinedOreActor, state) == aim.ore;
         }
         else
         {
             // The request checks the material itself and clears the state
             // for anything that is not a vein the player may harvest.
             reinterpret_cast<MiningNatives::MineIsmFn>(g_addrMineIsm)(comp, aim.vein, damage, interval);
-            took = state.InfiniteOrePhysicalMaterial == aim.vein;
+            took = DroneFields::ValueOr(DroneFields::MinedVeinMaterial, state) == aim.vein;
         }
 
         if (!took)
@@ -669,9 +704,13 @@ namespace
         if (auto* cooling = static_cast<SDK::UGA_MiningToolPassiveCooling_C*>(
                 g_s.coolingAbility.Resolve(SDK::UCrGameplayAbility::StaticClass())))
         {
-            g_heat.stackCoolSeconds  = pick(cooling->SingleStackDuration, 0.01, 600.0, kStockStackCoolSeconds);
-            g_heat.coolDelay         = pick(cooling->DefaultStartDelayDuration, 0.0, 600.0, kStockCoolDelay);
-            g_heat.overheatCoolDelay = pick(cooling->OverheatStartDelayDuration, 0.0, 600.0, kStockOverheatCoolDelay);
+            const IPluginObjectProperties* properties = DroneFields::ObjectProperties();
+            const double* singleStack = DroneFields::SingleStackDuration.In(properties, cooling);
+            const float*  coolDelay   = DroneFields::DefaultStartDelay.In(properties, cooling);
+            const float*  overheat    = DroneFields::OverheatStartDelay.In(properties, cooling);
+            g_heat.stackCoolSeconds  = singleStack ? pick(*singleStack, 0.01, 600.0, kStockStackCoolSeconds) : kStockStackCoolSeconds;
+            g_heat.coolDelay         = coolDelay ? pick(*coolDelay, 0.0, 600.0, kStockCoolDelay) : kStockCoolDelay;
+            g_heat.overheatCoolDelay = overheat ? pick(*overheat, 0.0, 600.0, kStockOverheatCoolDelay) : kStockOverheatCoolDelay;
         }
     }
 
@@ -813,7 +852,7 @@ namespace
             return;
         }
 
-        if (character->bDead)
+        if (DroneFields::Dead(character))
         {
             StopMining("character dead");
             return;
@@ -844,7 +883,7 @@ namespace
             return;
         }
 
-        SDK::UCrMiningComponent* comp = character->MiningComponent;
+        SDK::UCrMiningComponent* comp = DroneFields::ValueOr(DroneFields::MiningComponent, character);
         if (!comp)
         {
             StopMining("no mining component");
@@ -868,10 +907,12 @@ namespace
 
         // The tool's own rate (GetMiningRPM): the hit interval at level 0,
         // divided by the drill's fire rate multiplier.
-        const float damage   = tool->MiningTypeDamage * DamageMultiplier(character);
-        const float interval = SDK::UAbilitySystemBlueprintLibrary::Conv_ScalableFloatToFloat(tool->RoundsPerMinute, 0.0f)
-                             / g_s.drillFireRateMod;
-        const float range    = tool->BaseRange.Value;
+        const auto* rpm       = DroneFields::RoundsPerMinute.In(tool);
+        const auto* baseRange = DroneFields::BaseRange.In(tool);
+        const float damage   = DroneFields::ValueOr(DroneFields::MiningTypeDamage, tool, 0.0f) * DamageMultiplier(character);
+        const float interval = rpm ? SDK::UAbilitySystemBlueprintLibrary::Conv_ScalableFloatToFloat(*rpm, 0.0f)
+                                     / g_s.drillFireRateMod : 0.0f;
+        const float range    = baseRange ? baseRange->Value : 0.0f;
         if (!(damage > 0.0f) || !(interval > 0.0f) || !(range > 0.0f))
         {
             StopMining("mining tool has no damage, rate or range");
@@ -957,12 +998,7 @@ void ResolveDroneLaser(IPluginSelf* self, IPluginHookScanner* scanner)
 
     auto resolve = [&](const char* name, const char* pattern)
     {
-        PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-        req.hookName = name;
-        req.pattern  = pattern;
-        req.kind     = PLUGIN_SCAN_FUNCTION_START;
-        req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-        return scanner->Resolve(self, &req);
+        return DroneFields::ResolveFunction(self, scanner, name, pattern);
     };
 
     g_addrMineActor = resolve("UCrMiningComponent::MineResourceRequest(actor)", MiningNatives::kPatMineActor);
