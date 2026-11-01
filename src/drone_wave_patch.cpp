@@ -143,9 +143,9 @@ void ResolveWavePatch(IPluginSelf* self, IPluginHookScanner* scanner)
     // checks the match is a real function entry with room for the 14-byte jump,
     // rather than taking the pattern's word for it.
     g_addr = DroneFields::ResolveFunction(self, scanner,
-        "ACrCharacterPlayerBase::CanBuildingDroneBeActive", kCanBuildingDroneBeActivePattern);
+        DroneFields::Keys::CanDroneBeActive, kCanBuildingDroneBeActivePattern);
     g_addrInterior = DroneFields::ResolveFunction(self, scanner,
-        "ACrCharacterPlayerBase::CheckIfInInterior", kCheckIfInInteriorPattern);
+        DroneFields::Keys::CheckIfInInterior, kCheckIfInInteriorPattern);
 }
 
 static void InitShelterHook()
@@ -170,9 +170,13 @@ static void InitShelterHook()
     LOG_INFO("WaveShelter: shelter is judged at the parked body while the drone is out");
 }
 
-bool InitWavePatch()
+bool InitWavePatch(bool allowDrone, bool shelter)
 {
-    InitShelterHook();
+    if (shelter)
+        InitShelterHook();
+
+    if (!allowDrone)
+        return false;
 
     uintptr_t addr = g_addr;
 
