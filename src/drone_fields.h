@@ -128,6 +128,11 @@ namespace DroneFields
 	inline auto HudDistanceD = DRONE_FIELD(UCrUW_BuildingDroneHud, DistanceValueD);
 	inline auto HudDistanceU = DRONE_FIELD(UCrUW_BuildingDroneHud, DistanceValueU);
 	inline auto HudDistanceM = DRONE_FIELD(UCrUW_BuildingDroneHud, DistanceValueM);
+	inline auto HudHeightT   = DRONE_FIELD(UCrUW_BuildingDroneHud, HeightValueT);
+	inline auto HudHeightH   = DRONE_FIELD(UCrUW_BuildingDroneHud, HeightValueH);
+	inline auto HudHeightD   = DRONE_FIELD(UCrUW_BuildingDroneHud, HeightValueD);
+	inline auto HudHeightU   = DRONE_FIELD(UCrUW_BuildingDroneHud, HeightValueU);
+	inline auto HudHeightM   = DRONE_FIELD(UCrUW_BuildingDroneHud, HeightValueM);
 
 	// Structs stepped through as array or map elements
 	inline auto NativeInputActionSize = SR_SIZE_CHECK(FCrNativeInputAction);
@@ -167,6 +172,7 @@ namespace DroneFields
 			MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint,
 			MarkerColorData, MarkerPlayerColour,
 			HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM,
+			HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM,
 			NativeInputActionSize, InventorySlotSize, WeakSpotSize, MarkerItemSize, MarkerRepresentationSize,
 			VeinDataSize);
 	}
@@ -250,7 +256,8 @@ namespace DroneFields
 			{} };
 
 		inline PluginMap::Feature Speedometer{ "speedometer", "Speedometer on the drone HUD",
-			PluginMap::KeysOf(HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM),
+			PluginMap::KeysOf(HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM,
+				HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM),
 			{} };
 
 		inline PluginMap::Feature Audio{ "drone-audio", "Drone sound volumes",
