@@ -314,6 +314,13 @@ float SpeedInPanelUnit(float cmPerSec, char* unit, int unitSize)
     return cmPerSec * kSpeedScale[SelectUnitIndex(unit)].factor;
 }
 
+bool DistanceInFeet()
+{
+    char unit[16] = {};
+    DroneConfig::Config::ReadSpeedUnit(unit, sizeof(unit));
+    return SelectUnitIndex(unit) == kUnitMph;
+}
+
 static void OnToggleKeyPressed(EModKey, EModKeyEvent event)
 {
     if (event == EModKeyEvent::Pressed)
@@ -1217,7 +1224,7 @@ void RenderDronePanel(IModLoaderImGui* ui)
     if (ui->Checkbox("Speedometer##hud_speedometer", &speedometer))
         DroneConfig::Config::WriteSpeedometer(speedometer);
     if (ui->IsItemHovered())
-        ui->SetTooltip("Shows the drone's speed just right of the crosshair, in the unit above.");
+        ui->SetTooltip("Shows the drone's speed under the HUD's distance readout, in the unit above. With mph the distance shows in feet.");
 
     ui->Spacing();
 

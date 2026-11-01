@@ -1,8 +1,10 @@
 #pragma once
 
 // The drone's speed, in the panel's Speed Display Unit, under the drone HUD's
-// distance readout in the readout's own font: a text block added to the HUD
-// next to it. Where the HUD has no room for one, the speed is drawn instead
+// distance readout in the readout's own font: two text blocks added to the
+// HUD, the number lined up with the distance digits and the unit with their
+// "m" label. With mph as the unit the distance reads in feet: the HUD's digits
+// are hidden and the same two blocks show it. Where the HUD has no room for one, the speed is drawn instead
 // just right of the crosshair, outside the mining laser's heat ring, on a
 // transparent overlay widget of the loader's like the ring. Shown while the
 // drone is out and the panel's Speedometer setting is on.

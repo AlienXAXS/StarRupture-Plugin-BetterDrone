@@ -11,6 +11,10 @@ void RenderDronePanel(IModLoaderImGui* imgui);
 // ("km/h", "mph" or "cm/s") to `unit`. Any thread.
 float SpeedInPanelUnit(float cmPerSec, char* unit, int unitSize);
 
+// Whether the panel's Speed Display Unit is the imperial one (mph), so
+// distances show in feet; in metres otherwise. Any thread.
+bool DistanceInFeet();
+
 // The "Previous Preset Key" / "Next Preset Key" hotkeys: while the drone is
 // out they step the speed presets slowest to fastest, with a brief toast.
 void InitDronePresetKeys(IPluginSelf* self);

@@ -40,10 +40,14 @@ namespace
     // Moves smaller than this, in the panel's units, are not applied.
     constexpr double kMoveEpsilon = 0.25;
 
-    // The room the text needs under the readout, in ems of its font: wide
-    // enough for "9999 km/h", one line high.
-    constexpr double kTextWidthEm  = 6.0;
-    constexpr double kTextHeightEm = 1.5;
+    // The room each text needs, in ems of the readout's font: the number
+    // wide enough for "99999", the unit for "km/h", both one line high.
+    constexpr double kNumberWidthEm = 4.0;
+    constexpr double kUnitWidthEm   = 3.0;
+    constexpr double kTextHeightEm  = 1.5;
+
+    // Feet in a metre, for the distance readout when the panel's unit is mph.
+    constexpr double kFeetPerMetre = 3.280839895;
 
     // Guards the walk up the widget tree against a loop.
     constexpr int kMaxTreeDepth = 64;
@@ -71,36 +75,71 @@ namespace
     bool     g_wasInDrone   = false;
     float    g_smoothed     = -1.0f;   // below 0 until a flight's first sample
 
-    // The text block under the drone HUD's distance readout, the panel it was
-    // added to, and the HUD. Looked up again on every use.
+    // One readout this plugin adds to the drone HUD: the number, right aligned
+    // to the right edge of the HUD's distance digits, and its unit, left
+    // aligned to where the HUD's own "m" label starts, as the distance row
+    // lays them out.
+    struct Line
+    {
+        ObjectRef<SDK::UTextBlock> number;
+        ObjectRef<SDK::UTextBlock> unit;
+        float          opacity = 1.0f;
+        SDK::FVector2D numberAt = {};
+        SDK::FVector2D unitAt   = {};
+        std::string    shownNumber;
+        std::string    shownUnit;
+    };
+
+    // The speed, under the drone HUD's distance readout, and the distance in
+    // feet, over the readout while the game's digits are hidden. The panel
+    // they were added to, and the HUD. Looked up again on every use.
     ObjectRef<SDK::UCrUW_BuildingDroneHud> g_hud;
     ObjectRef<SDK::UPanelWidget>           g_panel;
-    ObjectRef<SDK::UTextBlock>             g_text;
+    Line g_speedLine;
+    Line g_distLine;
 
     bool           g_attachFailed   = false;   // until the drone is next launched
+    bool           g_distFailed     = false;   // likewise, for the distance
     bool           g_loggedAttach   = false;   // one line per path, per load
     bool           g_loggedFallback = false;
-    float          g_textOpacity    = 1.0f;
-    SDK::FVector2D g_position       = {};
-    SDK::FVector2D g_room           = {};      // the text size the panel was checked for
-    std::string    g_shownText;
+    bool           g_loggedDistance = false;
+    SDK::FVector2D g_numberRoom     = {};      // the text sizes the panel was checked for
+    SDK::FVector2D g_unitRoom       = {};
+
+    // The HUD's distance elements (T, H, D, U, M) while they are hidden for
+    // the distance in feet, and the opacity each had.
+    constexpr int kGameElems = 5;
+    bool  g_gameHidden = false;
+    float g_gameOpacity[kGameElems] = {};
 
     // One FText per string ever shown, built once and kept, as the loader's
     // menu rows do: dropping an FText means releasing its refcounted text
-    // data by hand. Speeds are rounded to three significant figures, which
-    // keeps the set to a few thousand strings at most.
+    // data by hand. Speeds and distances are rounded to three significant
+    // figures, which keeps the set to a few thousand strings at most.
     std::unordered_map<std::string, SDK::FText> g_texts;
 
     enum class Attached { Yes, NotYet, Never };
 
-    // `cmPerSec` in the panel's unit, to three significant figures.
+    // `value` rounded to three significant figures.
+    long ThreeFigures(float value)
+    {
+        const float step = value >= 10000.0f ? 100.0f : value >= 1000.0f ? 10.0f : 1.0f;
+        return static_cast<long>(std::round(value / step) * step);
+    }
+
+    // `cmPerSec` in the panel's unit: the number and the unit's name.
+    void SpeedParts(float cmPerSec, char* number, size_t numberSize, char* unit, size_t unitSize)
+    {
+        const float inUnit = (std::min)(SpeedInPanelUnit(cmPerSec, unit, static_cast<int>(unitSize)), 999999.0f);
+        snprintf(number, numberSize, "%ld", ThreeFigures(inUnit));
+    }
+
     void FormatSpeed(float cmPerSec, char* out, size_t size)
     {
-        char unit[16] = {};
-        const float inUnit = (std::min)(SpeedInPanelUnit(cmPerSec, unit, sizeof(unit)), 999999.0f);
-        const float step   = inUnit >= 10000.0f ? 100.0f : inUnit >= 1000.0f ? 10.0f : 1.0f;
-        const long  value  = static_cast<long>(std::round(inUnit / step) * step);
-        snprintf(out, size, "%ld %s", value, unit);
+        char number[32] = {};
+        char unit[16]   = {};
+        SpeedParts(cmPerSec, number, sizeof(number), unit, sizeof(unit));
+        snprintf(out, size, "%s %s", number, unit);
     }
 
     // Render thread. The fallback: just right of the crosshair, outside the
@@ -200,7 +239,9 @@ namespace
     }
 
     // Whether the readout is on screen as far up as `panel` (to the top of
-    // the tree when null), and the opacity the widgets in between give it.
+    // the tree when null), and the opacity the widgets above it give it. The
+    // readout's own opacity is left out: this plugin sets it to zero while
+    // it shows the distance in feet.
     bool ReadoutShown(SDK::UWidget* readout, SDK::UWidget* panel, float* opacity)
     {
         float product = 1.0f;
@@ -209,53 +250,75 @@ namespace
         {
             if (!IsShown(widget))
                 return false;
-            product *= widget->RenderOpacity;
+            if (widget != readout)
+                product *= widget->RenderOpacity;
             widget = ParentOf(widget);
         }
         *opacity = product;
         return product > 0.01f;
     }
 
-    // The visible distance digits, in `panel`'s own units: their right edge
-    // and bottom edge, and how much bigger they draw there than in their own
-    // units. The right edge is the furthest right of the elements, so it keeps
-    // its place as the distance gains or loses a digit. False until the HUD
-    // has been laid out.
-    bool DigitsIn(SDK::UCrUW_BuildingDroneHud* hud, SDK::UWidget* panel, double* right, double* bottom, double* scale)
+    // Where the HUD's distance readout is, in `panel`'s own units: the units
+    // digit's right edge, where the "m" label starts and how far it sits
+    // below the digit's top (the unit's own left edge when there is no
+    // label), the top and bottom edges of the row, and how much bigger it
+    // draws there than in its own units.
+    struct Digits
     {
-        const SDK::FGeometry panelGeo = panel->GetCachedGeometry();
-        if (SDK::USlateBlueprintLibrary::GetLocalSize(panelGeo).X <= 0.0)
+        double right    = 0.0;
+        double unitLeft = 0.0;
+        double unitDy   = 0.0;
+        double top      = 0.0;
+        double bottom   = 0.0;
+        double scale    = 1.0;
+    };
+
+    // The element's edges in `panel`'s units. False until it has been laid out.
+    bool EdgesIn(SDK::UWidget* elem, SDK::UWidget* panel, SDK::FVector2D* topLeft, SDK::FVector2D* bottomRight)
+    {
+        if (!elem || !IsShown(elem))
             return false;
 
-        SDK::UTextBlock* const elems[] = {
-            DroneFields::ValueOr(DroneFields::HudDistanceT, hud), DroneFields::ValueOr(DroneFields::HudDistanceH, hud),
-            DroneFields::ValueOr(DroneFields::HudDistanceD, hud), DroneFields::DistanceU(hud),
-            DroneFields::ValueOr(DroneFields::HudDistanceM, hud) };
+        const SDK::FGeometry panelGeo = panel->GetCachedGeometry();
+        const SDK::FGeometry geo      = elem->GetCachedGeometry();
+        const SDK::FVector2D size     = SDK::USlateBlueprintLibrary::GetLocalSize(geo);
+        if (SDK::USlateBlueprintLibrary::GetLocalSize(panelGeo).X <= 0.0 || size.X <= 0.0 || size.Y <= 0.0)
+            return false;
 
-        bool any = false;
-        *scale = 1.0;
-        for (SDK::UTextBlock* elem : elems)
+        *topLeft = SDK::USlateBlueprintLibrary::AbsoluteToLocal(
+            panelGeo, SDK::USlateBlueprintLibrary::LocalToAbsolute(geo, Vec(0.0, 0.0)));
+        *bottomRight = SDK::USlateBlueprintLibrary::AbsoluteToLocal(
+            panelGeo, SDK::USlateBlueprintLibrary::LocalToAbsolute(geo, size));
+        return true;
+    }
+
+    // False until the HUD has been laid out. The units digit is the
+    // rightmost of the digits, so its right edge keeps its place as the
+    // distance gains or loses a digit.
+    bool DigitsIn(SDK::UCrUW_BuildingDroneHud* hud, SDK::UWidget* panel, Digits* out)
+    {
+        SDK::UTextBlock* const digit = DroneFields::DistanceU(hud);
+        SDK::FVector2D topLeft, bottomRight;
+        if (!EdgesIn(digit, panel, &topLeft, &bottomRight))
+            return false;
+
+        const SDK::FVector2D size = SDK::USlateBlueprintLibrary::GetLocalSize(digit->GetCachedGeometry());
+        out->scale    = (bottomRight.Y - topLeft.Y) / size.Y;
+        out->right    = bottomRight.X;
+        out->top      = topLeft.Y;
+        out->bottom   = bottomRight.Y;
+        out->unitLeft = bottomRight.X;
+        out->unitDy   = 0.0;
+
+        SDK::FVector2D labelTopLeft, labelBottomRight;
+        if (EdgesIn(DroneFields::ValueOr(DroneFields::HudDistanceM, hud), panel, &labelTopLeft, &labelBottomRight))
         {
-            // A leading zero may be kept in the row but faded out.
-            if (!elem || !IsShown(elem) || elem->RenderOpacity < 0.05f || elem->ColorAndOpacity.SpecifiedColor.A < 0.05f)
-                continue;
-
-            const SDK::FGeometry geo  = elem->GetCachedGeometry();
-            const SDK::FVector2D size = SDK::USlateBlueprintLibrary::GetLocalSize(geo);
-            if (size.X <= 0.0 || size.Y <= 0.0)
-                continue;
-
-            const SDK::FVector2D topLeft = SDK::USlateBlueprintLibrary::AbsoluteToLocal(
-                panelGeo, SDK::USlateBlueprintLibrary::LocalToAbsolute(geo, Vec(0.0, 0.0)));
-            const SDK::FVector2D bottomRight = SDK::USlateBlueprintLibrary::AbsoluteToLocal(
-                panelGeo, SDK::USlateBlueprintLibrary::LocalToAbsolute(geo, size));
-
-            if (!any || bottomRight.X > *right)   *right  = bottomRight.X;
-            if (!any || bottomRight.Y > *bottom)  *bottom = bottomRight.Y;
-            if (elem == DroneFields::DistanceU(hud))      *scale  = (bottomRight.Y - topLeft.Y) / size.Y;
-            any = true;
+            out->unitLeft = labelTopLeft.X;
+            out->unitDy   = labelTopLeft.Y - topLeft.Y;
+            out->top      = (std::min)(out->top, labelTopLeft.Y);
+            out->bottom   = (std::max)(out->bottom, labelBottomRight.Y);
         }
-        return any;
+        return true;
     }
 
     // Why the speed is beside the crosshair, then the readout's ancestry,
@@ -285,29 +348,90 @@ namespace
         return &g_texts.emplace(s, text).first->second;
     }
 
-    void Forget()
-    {
-        g_text.Reset();
-        g_panel.Reset();
-        g_textOpacity = 1.0f;
-        g_position    = {};
-        g_room        = {};
-        g_shownText.clear();
-    }
-
     // The text block, while it is still the one added to the panel.
-    SDK::UTextBlock* OurText()
+    SDK::UTextBlock* Ours(const ObjectRef<SDK::UTextBlock>& ref)
     {
-        SDK::UTextBlock*   text  = g_text.Get();
+        SDK::UTextBlock*   text  = ref.Get();
         SDK::UPanelWidget* panel = g_panel.Get();
         return text && panel && text->Slot && text->Slot->Parent == panel ? text : nullptr;
     }
 
-    // Takes the text block out of the HUD, if it is still ours.
+    bool Intact(const Line& line) { return Ours(line.number) && Ours(line.unit); }
+
+    void ForgetLine(Line& line)
+    {
+        line.number.Reset();
+        line.unit.Reset();
+        line.opacity = 1.0f;
+        line.numberAt = {};
+        line.unitAt   = {};
+        line.shownNumber.clear();
+        line.shownUnit.clear();
+    }
+
+    void Forget()
+    {
+        ForgetLine(g_speedLine);
+        ForgetLine(g_distLine);
+        g_panel.Reset();
+        g_numberRoom = {};
+        g_unitRoom   = {};
+    }
+
+    // The HUD's distance elements, T H D U M.
+    void GameElems(SDK::UCrUW_BuildingDroneHud* hud, SDK::UTextBlock** out)
+    {
+        out[0] = DroneFields::ValueOr(DroneFields::HudDistanceT, hud);
+        out[1] = DroneFields::ValueOr(DroneFields::HudDistanceH, hud);
+        out[2] = DroneFields::ValueOr(DroneFields::HudDistanceD, hud);
+        out[3] = DroneFields::DistanceU(hud);
+        out[4] = DroneFields::ValueOr(DroneFields::HudDistanceM, hud);
+    }
+
+    // Hides the HUD's distance digits by their opacity, which keeps them in
+    // the layout and keeps the game updating their text, or gives them back
+    // the opacity they had.
+    void HideGameDigits(SDK::UCrUW_BuildingDroneHud* hud, bool hide)
+    {
+        if (!hide && !g_gameHidden)
+            return;
+
+        SDK::UTextBlock* elems[kGameElems] = {};
+        if (hud)
+            GameElems(hud, elems);
+
+        for (int i = 0; i < kGameElems; ++i)
+        {
+            if (!elems[i])
+                continue;
+            if (hide)
+            {
+                if (!g_gameHidden)
+                    g_gameOpacity[i] = elems[i]->RenderOpacity;
+                if (elems[i]->RenderOpacity != 0.0f)
+                    elems[i]->SetRenderOpacity(0.0f);
+            }
+            else
+            {
+                elems[i]->SetRenderOpacity(g_gameOpacity[i]);
+            }
+        }
+        g_gameHidden = hide;
+    }
+
+    // Takes our text blocks out of the HUD, if they are still ours, and gives
+    // the game its distance digits back.
     void Detach()
     {
-        if (SDK::UTextBlock* text = OurText())
-            text->RemoveFromParent();
+        HideGameDigits(g_hud.Get(), false);
+        g_gameHidden = false;
+        for (Line* line : { &g_speedLine, &g_distLine })
+        {
+            if (SDK::UTextBlock* text = Ours(line->number))
+                text->RemoveFromParent();
+            if (SDK::UTextBlock* text = Ours(line->unit))
+                text->RemoveFromParent();
+        }
         Forget();
     }
 
@@ -315,6 +439,14 @@ namespace
     {
         if (IsShown(text) != shown)
             text->SetVisibility(shown ? SDK::ESlateVisibility::HitTestInvisible : SDK::ESlateVisibility::Collapsed);
+    }
+
+    void ShowLine(Line& line, bool shown)
+    {
+        if (SDK::UTextBlock* text = Ours(line.number))
+            ShowText(text, shown);
+        if (SDK::UTextBlock* text = Ours(line.unit))
+            ShowText(text, shown);
     }
 
     // Exactly these classes: a subclass such as CommonUI's visibility
@@ -329,80 +461,48 @@ namespace
                a.SpecifiedColor.B == b.SpecifiedColor.B && a.SpecifiedColor.A == b.SpecifiedColor.A;
     }
 
-    // Where the text's right and top edges go for the readout's `right` and
-    // `bottom` edges in `panel`: the gap from the panel's right edge for an
-    // overlay slot's padding, the position for a canvas slot.
-    SDK::FVector2D Anchor(SDK::UPanelWidget* panel, double right, double bottom)
+    // Where a row of the readout goes, in the form `panel` takes it: for an
+    // overlay slot, the number's gap from the panel's right edge, the unit's
+    // gap from its left edge, and both tops as top padding; for a canvas
+    // slot, the positions themselves.
+    void Anchors(SDK::UPanelWidget* panel, const Digits& d, double rowTop, SDK::FVector2D* number, SDK::FVector2D* unit)
     {
-        if (!IsOverlay(panel))
-            return Vec(right, bottom);
-        return Vec(SDK::USlateBlueprintLibrary::GetLocalSize(panel->GetCachedGeometry()).X - right, bottom);
-    }
-
-    void Place(SDK::UTextBlock* text, SDK::UPanelWidget* panel, const SDK::FVector2D& anchor)
-    {
+        *number = Vec(d.right, rowTop);
+        *unit   = Vec(d.unitLeft, rowTop + d.unitDy);
         if (IsOverlay(panel))
-        {
-            SDK::FMargin padding{};
-            padding.Right = static_cast<float>(anchor.X);
-            padding.Top   = static_cast<float>(anchor.Y);
-            static_cast<SDK::UOverlaySlot*>(text->Slot)->SetPadding(padding);
-        }
-        else
-        {
-            static_cast<SDK::UCanvasPanelSlot*>(text->Slot)->SetPosition(anchor);
-        }
-        g_position = anchor;
+            number->X = SDK::USlateBlueprintLibrary::GetLocalSize(panel->GetCachedGeometry()).X - d.right;
     }
 
-    // Adds a text block, styled like the readout's units digit and right
-    // aligned to the digits' right edge, to the nearest overlay or canvas
-    // panel above the readout that has room for it under the digits, growing
-    // leftward. Only those two place a child without moving the ones
-    // already there: a horizontal or vertical box would shift the readout or
-    // the rows under it, and a size box or border holds a single child. Room
-    // means the text stays inside the panel's current bounds, so the panel's
-    // own size, and everything laid out around it, is unchanged.
-    Attached Attach(SDK::UCrUW_BuildingDroneHud* hud, const char** why)
+    void Place(Line& line, SDK::UPanelWidget* panel, const SDK::FVector2D& number, const SDK::FVector2D& unit)
     {
-        *why = "the distance readout is hidden or not laid out yet";
-        SDK::UTextBlock* source = DroneFields::DistanceU(hud);
-        float opacity = 1.0f;
-        if (!source || !ReadoutShown(source, nullptr, &opacity))
-            return Attached::NotYet;
-
-        const SDK::FVector2D sourceSize = SDK::USlateBlueprintLibrary::GetLocalSize(source->GetCachedGeometry());
-        if (sourceSize.X <= 0.0 || sourceSize.Y <= 0.0)
-            return Attached::NotYet;
-
-        SDK::UPanelWidget* panel = nullptr;
-        SDK::FVector2D room = {};
-        double right = 0.0, bottom = 0.0, scale = 1.0;
-        SDK::UWidget* widget = ParentOf(source);
-        for (int depth = 0; widget && depth < kMaxTreeDepth; ++depth, widget = ParentOf(widget))
+        SDK::UTextBlock* const texts[] = { Ours(line.number), Ours(line.unit) };
+        const SDK::FVector2D   at[]    = { number, unit };
+        for (int i = 0; i < 2; ++i)
         {
-            if (!IsOverlay(widget) && !IsCanvas(widget))
-                continue;
-            if (!DigitsIn(hud, widget, &right, &bottom, &scale))
-                return Attached::NotYet;
-
-            const double em = source->Font.Size * scale * 96.0 / 72.0;
-            const SDK::FVector2D bounds = SDK::USlateBlueprintLibrary::GetLocalSize(widget->GetCachedGeometry());
-            room = Vec(kTextWidthEm * em, kTextHeightEm * em);
-            if (right - room.X >= 0.0 && bottom >= 0.0 && right <= bounds.X && bottom + room.Y <= bounds.Y)
+            if (IsOverlay(panel))
             {
-                panel = static_cast<SDK::UPanelWidget*>(widget);
-                break;
+                SDK::FMargin padding{};
+                (i == 0 ? padding.Right : padding.Left) = static_cast<float>(at[i].X);
+                padding.Top = static_cast<float>(at[i].Y);
+                static_cast<SDK::UOverlaySlot*>(texts[i]->Slot)->SetPadding(padding);
+            }
+            else
+            {
+                static_cast<SDK::UCanvasPanelSlot*>(texts[i]->Slot)->SetPosition(at[i]);
             }
         }
-        *why = "no overlay or canvas panel above the distance readout has room for the text";
-        if (!panel)
-            return Attached::Never;
+        line.numberAt = number;
+        line.unitAt   = unit;
+    }
 
-        *why = "the text block could not be created";
+    // A text block styled like `source`, added to `panel` and aligned to the
+    // right (the number) or the left (the unit) of its slot; null if the
+    // panel would not take it.
+    SDK::UTextBlock* AddText(SDK::UPanelWidget* panel, SDK::UTextBlock* source, double scale, bool rightAligned)
+    {
         SDK::UObject* created = SDK::UGameplayStatics::SpawnObject(SDK::UTextBlock::StaticClass(), panel->Outer);
         if (!created || !created->IsA(SDK::UTextBlock::StaticClass()))
-            return Attached::Never;
+            return nullptr;
         auto* text = static_cast<SDK::UTextBlock*>(created);
 
         // Drawn at the readout's size even if a panel in between scales it.
@@ -416,68 +516,268 @@ namespace
         text->SetShadowOffset(source->ShadowOffset);
         text->SetShadowColorAndOpacity(source->ShadowColorAndOpacity);
         text->SetTextTransformPolicy(source->TextTransformPolicy);
-        text->SetJustification(SDK::ETextJustify::Right);
+        text->SetJustification(rightAligned ? SDK::ETextJustify::Right : SDK::ETextJustify::Left);
 
-        *why = "the panel would not take the text block";
         if (IsOverlay(panel))
         {
             SDK::UOverlaySlot* slot = static_cast<SDK::UOverlay*>(panel)->AddChildToOverlay(text);
             if (!slot)
-                return Attached::Never;
-            slot->SetHorizontalAlignment(SDK::EHorizontalAlignment::HAlign_Right);
+                return nullptr;
+            slot->SetHorizontalAlignment(rightAligned ? SDK::EHorizontalAlignment::HAlign_Right
+                                                      : SDK::EHorizontalAlignment::HAlign_Left);
             slot->SetVerticalAlignment(SDK::EVerticalAlignment::VAlign_Top);
         }
         else
         {
             SDK::UCanvasPanelSlot* slot = static_cast<SDK::UCanvasPanel*>(panel)->AddChildToCanvas(text);
             if (!slot)
-                return Attached::Never;
+                return nullptr;
             SDK::FAnchors anchors;
             anchors.Minimum = Vec(0.0, 0.0);
             anchors.Maximum = Vec(0.0, 0.0);
             slot->SetAnchors(anchors);
-            slot->SetAlignment(Vec(1.0, 0.0));
+            slot->SetAlignment(Vec(rightAligned ? 1.0 : 0.0, 0.0));
             slot->SetAutoSize(true);
+        }
+        return text;
+    }
+
+    // The unit takes its look from the HUD's "m" label, or the digit when
+    // there is none.
+    SDK::UTextBlock* UnitSource(SDK::UCrUW_BuildingDroneHud* hud)
+    {
+        SDK::UTextBlock* label = DroneFields::ValueOr(DroneFields::HudDistanceM, hud);
+        return label ? label : DroneFields::DistanceU(hud);
+    }
+
+    // Adds a line's two text blocks to `panel`, placed for a row at `rowTop`.
+    bool AttachLine(Line& line, SDK::UCrUW_BuildingDroneHud* hud, SDK::UPanelWidget* panel, const Digits& d, double rowTop)
+    {
+        SDK::UTextBlock* number = AddText(panel, DroneFields::DistanceU(hud), d.scale, true);
+        SDK::UTextBlock* unit   = number ? AddText(panel, UnitSource(hud), d.scale, false) : nullptr;
+        if (!unit)
+        {
+            if (number)
+                number->RemoveFromParent();
+            return false;
+        }
+
+        line.number.Set(number);
+        line.unit.Set(unit);
+        line.opacity = 1.0f;
+        line.shownNumber.clear();
+        line.shownUnit.clear();
+
+        SDK::FVector2D numberAt, unitAt;
+        Anchors(panel, d, rowTop, &numberAt, &unitAt);
+        Place(line, panel, numberAt, unitAt);
+        return true;
+    }
+
+    // Adds the speed, in two text blocks styled like the readout's units
+    // digit and "m" label, to the nearest overlay or canvas panel above the
+    // readout that has room for them under the digits: the number right
+    // aligned to the digits' right edge, the unit left aligned to where the
+    // label starts. Only those two panels place a child without moving the
+    // ones already there: a horizontal or vertical box would shift the
+    // readout or the rows under it, and a size box or border holds a single
+    // child. Room means the texts stay inside the panel's current bounds, so
+    // the panel's own size, and everything laid out around it, is unchanged.
+    Attached Attach(SDK::UCrUW_BuildingDroneHud* hud, const char** why)
+    {
+        *why = "the distance readout is hidden or not laid out yet";
+        SDK::UTextBlock* source = DroneFields::DistanceU(hud);
+        float opacity = 1.0f;
+        if (!source || !ReadoutShown(source, nullptr, &opacity))
+            return Attached::NotYet;
+
+        const SDK::FVector2D sourceSize = SDK::USlateBlueprintLibrary::GetLocalSize(source->GetCachedGeometry());
+        if (sourceSize.X <= 0.0 || sourceSize.Y <= 0.0)
+            return Attached::NotYet;
+
+        SDK::UPanelWidget* panel = nullptr;
+        SDK::FVector2D numberRoom = {}, unitRoom = {};
+        Digits d;
+        SDK::UWidget* widget = ParentOf(source);
+        for (int depth = 0; widget && depth < kMaxTreeDepth; ++depth, widget = ParentOf(widget))
+        {
+            if (!IsOverlay(widget) && !IsCanvas(widget))
+                continue;
+            if (!DigitsIn(hud, widget, &d))
+                return Attached::NotYet;
+
+            const double em = source->Font.Size * d.scale * 96.0 / 72.0;
+            const SDK::FVector2D bounds = SDK::USlateBlueprintLibrary::GetLocalSize(widget->GetCachedGeometry());
+            numberRoom = Vec(kNumberWidthEm * em, kTextHeightEm * em);
+            unitRoom   = Vec(kUnitWidthEm * em, kTextHeightEm * em);
+            if (d.right - numberRoom.X >= 0.0 && d.top >= 0.0 && d.unitLeft + unitRoom.X <= bounds.X &&
+                d.bottom + numberRoom.Y <= bounds.Y)
+            {
+                panel = static_cast<SDK::UPanelWidget*>(widget);
+                break;
+            }
+        }
+        *why = "no overlay or canvas panel above the distance readout has room for the text";
+        if (!panel)
+            return Attached::Never;
+
+        g_panel.Set(panel);
+        *why = "the text blocks could not be created";
+        if (!AttachLine(g_speedLine, hud, panel, d, d.bottom))
+        {
+            g_panel.Reset();
+            return Attached::Never;
         }
 
         g_hud.Set(hud);
-        g_panel.Set(panel);
-        g_text.Set(text);
-        g_textOpacity = 1.0f;
-        g_room        = room;
-        g_shownText.clear();
-        Place(text, panel, Anchor(panel, right, bottom));
+        g_numberRoom = numberRoom;
+        g_unitRoom   = unitRoom;
 
         if (!g_loggedAttach)
         {
-            LOG_INFO("Speedometer: under the drone HUD's distance readout, in %s %s, right edge at %.0f, bottom at %.0f",
-                panel->Class ? panel->Class->GetName().c_str() : "?", panel->GetName().c_str(), right, bottom);
+            LOG_INFO("Speedometer: under the drone HUD's distance readout, in %s %s, digits' right edge at %.0f, unit at %.0f, bottom at %.0f",
+                panel->Class ? panel->Class->GetName().c_str() : "?", panel->GetName().c_str(), d.right, d.unitLeft, d.bottom);
             g_loggedAttach = true;
         }
         return Attached::Yes;
     }
 
-    // Shows `shown` under the readout. False when the speed has to be drawn
-    // beside the crosshair instead.
-    bool ShowUnderReadout(SDK::ACrCharacterPlayerBase* character, const char* shown, uint64_t now)
+    // The text in one of the HUD's elements; empty if it has none.
+    std::string TextOf(const SDK::UTextBlock* elem)
     {
-        // All three are looked up again on every use. A text block left in a
-        // panel that outlives the HUD is taken out; one whose panel or slot
-        // has changed is no longer known to be ours, and is only forgotten.
+        return elem && elem->Text.TextData ? elem->Text.ToString() : std::string();
+    }
+
+    // The distance the HUD shows, in whole metres, from its digits and "m"
+    // label. False when they read as anything else.
+    bool GameMetres(SDK::UCrUW_BuildingDroneHud* hud, long* metres)
+    {
+        SDK::UTextBlock* elems[kGameElems] = {};
+        GameElems(hud, elems);
+
+        std::string digits;
+        for (int i = 0; i < 4; ++i)
+        {
+            if (!elems[i])
+            {
+                if (i == 3)
+                    return false;
+                continue;
+            }
+            for (char c : TextOf(elems[i]))
+            {
+                if (c >= '0' && c <= '9')
+                    digits += c;
+                else if (c != ' ')
+                    return false;
+            }
+        }
+        const std::string label = TextOf(elems[4]);
+        if (digits.empty() || (!label.empty() && label[0] >= '0' && label[0] <= '9'))
+            return false;
+
+        if (!g_loggedDistance)
+        {
+            LOG_INFO("Speedometer: distance digits '%s' '%s' '%s' '%s', label '%s'", TextOf(elems[0]).c_str(),
+                TextOf(elems[1]).c_str(), TextOf(elems[2]).c_str(), TextOf(elems[3]).c_str(), label.c_str());
+            g_loggedDistance = true;
+        }
+        *metres = std::strtol(digits.c_str(), nullptr, 10);
+        return true;
+    }
+
+    // Brings a line up to date: its place, look and text.
+    void UpdateLine(Line& line, SDK::UCrUW_BuildingDroneHud* hud, SDK::UPanelWidget* panel, const Digits& d, double rowTop,
+                    float opacity, const char* number, const char* unit)
+    {
+        SDK::UTextBlock* numberText = Ours(line.number);
+        SDK::UTextBlock* unitText   = Ours(line.unit);
+
+        SDK::FVector2D numberAt, unitAt;
+        Anchors(panel, d, rowTop, &numberAt, &unitAt);
+        if (std::fabs(numberAt.X - line.numberAt.X) > kMoveEpsilon || std::fabs(numberAt.Y - line.numberAt.Y) > kMoveEpsilon ||
+            std::fabs(unitAt.X - line.unitAt.X) > kMoveEpsilon || std::fabs(unitAt.Y - line.unitAt.Y) > kMoveEpsilon)
+            Place(line, panel, numberAt, unitAt);
+
+        if (!SameColour(numberText->ColorAndOpacity, DroneFields::DistanceU(hud)->ColorAndOpacity))
+            numberText->SetColorAndOpacity(DroneFields::DistanceU(hud)->ColorAndOpacity);
+        if (!SameColour(unitText->ColorAndOpacity, UnitSource(hud)->ColorAndOpacity))
+            unitText->SetColorAndOpacity(UnitSource(hud)->ColorAndOpacity);
+
+        if (std::fabs(opacity - line.opacity) > 0.02f)
+        {
+            numberText->SetRenderOpacity(opacity);
+            unitText->SetRenderOpacity(opacity);
+            line.opacity = opacity;
+        }
+
+        if (line.shownNumber != number)
+        {
+            line.shownNumber = number;
+            numberText->SetText(*TextFor(line.shownNumber));
+        }
+        if (line.shownUnit != unit)
+        {
+            line.shownUnit = unit;
+            unitText->SetText(*TextFor(line.shownUnit));
+        }
+        ShowLine(line, true);
+    }
+
+    // Whether either text of a line is larger than the room checked at attach.
+    bool Oversize(const Line& line)
+    {
+        const SDK::FVector2D n = SDK::USlateBlueprintLibrary::GetLocalSize(Ours(line.number)->GetCachedGeometry());
+        const SDK::FVector2D u = SDK::USlateBlueprintLibrary::GetLocalSize(Ours(line.unit)->GetCachedGeometry());
+        return n.X > g_numberRoom.X || n.Y > g_numberRoom.Y || u.X > g_unitRoom.X || u.Y > g_unitRoom.Y;
+    }
+
+    // While the panel's unit is mph the distance shows in feet, in text of
+    // ours over the HUD's digits, which are hidden; otherwise, or when the
+    // digits cannot be read, the HUD's own metres show.
+    void ShowDistance(SDK::UCrUW_BuildingDroneHud* hud, SDK::UPanelWidget* panel, const Digits& d, float opacity)
+    {
+        long metres = 0;
+        if (DistanceInFeet() && !g_distFailed && GameMetres(hud, &metres))
+        {
+            if (!Intact(g_distLine) && !AttachLine(g_distLine, hud, panel, d, d.top))
+                g_distFailed = true;
+
+            if (Intact(g_distLine))
+            {
+                HideGameDigits(hud, true);
+                char number[32];
+                snprintf(number, sizeof(number), "%ld", ThreeFigures(static_cast<float>(metres * kFeetPerMetre)));
+                UpdateLine(g_distLine, hud, panel, d, d.top, opacity, number, "ft");
+                return;
+            }
+        }
+        ShowLine(g_distLine, false);
+        HideGameDigits(hud, false);
+    }
+
+    // Shows the speed under the readout. False when it has to be drawn
+    // beside the crosshair instead.
+    bool ShowUnderReadout(SDK::ACrCharacterPlayerBase* character, const char* number, const char* unit, uint64_t now)
+    {
+        // All three are looked up again on every use. Text blocks left in a
+        // panel that outlives the HUD are taken out; ones whose panel or slot
+        // has changed are no longer known to be ours, and are only forgotten.
         SDK::UCrUW_BuildingDroneHud* hud = g_hud.Get();
         SDK::UPanelWidget* panel = g_panel.Get();
-        SDK::UTextBlock* text = g_text.Get();
-        if (text && (!hud || !panel || !text->Slot || text->Slot->Parent != panel))
+        const bool known = g_speedLine.number.Get() || g_speedLine.unit.Get();
+        if (known && (!hud || !panel || !Intact(g_speedLine)))
         {
             Detach();
-            text = nullptr;
+            hud = nullptr;
+            panel = nullptr;
         }
-        else if (!text)
+        else if (!known)
         {
             Forget();
         }
 
-        if (!text)
+        if (!Intact(g_speedLine))
         {
             if (g_attachFailed)
                 return false;
@@ -502,7 +802,6 @@ namespace
             const Attached result = hud ? Attach(hud, &why) : late ? Attached::Never : Attached::NotYet;
             if (result == Attached::Yes)
             {
-                text  = g_text.Get();
                 panel = g_panel.Get();
             }
             else if (result == Attached::Never || late)
@@ -514,28 +813,24 @@ namespace
                     g_loggedFallback = true;
                 }
             }
-            if (!text || !panel)
+            if (!Intact(g_speedLine) || !panel)
                 return false;
         }
 
         // The game hides the readout (a cutscene, a collapsed HUD): the speed
         // goes with it, and is not drawn anywhere else.
         float opacity = 1.0f;
-        double right = 0.0, bottom = 0.0, scale = 1.0;
-        if (!ReadoutShown(DroneFields::DistanceU(hud), panel, &opacity) || !DigitsIn(hud, panel, &right, &bottom, &scale))
+        Digits d;
+        if (!ReadoutShown(DroneFields::DistanceU(hud), panel, &opacity) || !DigitsIn(hud, panel, &d))
         {
-            ShowText(text, false);
+            ShowLine(g_speedLine, false);
+            ShowLine(g_distLine, false);
             return true;
         }
 
-        const SDK::FVector2D anchor = Anchor(panel, right, bottom);
-        if (std::fabs(anchor.X - g_position.X) > kMoveEpsilon || std::fabs(anchor.Y - g_position.Y) > kMoveEpsilon)
-            Place(text, panel, anchor);
-
         // Text larger than the room checked at attach could grow a panel
         // that sizes to its content: give the place up.
-        const SDK::FVector2D size = SDK::USlateBlueprintLibrary::GetLocalSize(text->GetCachedGeometry());
-        if (size.X > g_room.X || size.Y > g_room.Y)
+        if (Oversize(g_speedLine) || (Intact(g_distLine) && Oversize(g_distLine)))
         {
             Detach();
             g_attachFailed = true;
@@ -547,22 +842,8 @@ namespace
             return false;
         }
 
-        if (!SameColour(text->ColorAndOpacity, DroneFields::DistanceU(hud)->ColorAndOpacity))
-            text->SetColorAndOpacity(DroneFields::DistanceU(hud)->ColorAndOpacity);
-
-        if (std::fabs(opacity - g_textOpacity) > 0.02f)
-        {
-            text->SetRenderOpacity(opacity);
-            g_textOpacity = opacity;
-        }
-
-        if (g_shownText != shown)
-        {
-            g_shownText = shown;
-            text->SetText(*TextFor(g_shownText));
-        }
-
-        ShowText(text, true);
+        UpdateLine(g_speedLine, hud, panel, d, d.bottom, opacity, number, unit);
+        ShowDistance(hud, panel, d, opacity);
         return true;
     }
 
@@ -573,6 +854,7 @@ namespace
         HideFallback();
         g_smoothed     = -1.0f;
         g_attachFailed = false;
+        g_distFailed   = false;
         g_wasInDrone   = false;
     }
 }
@@ -628,8 +910,8 @@ void TickDroneSpeedometer()
 
     if (IsGameMenuOpen())
     {
-        if (SDK::UTextBlock* text = OurText())
-            ShowText(text, false);
+        ShowLine(g_speedLine, false);
+        ShowLine(g_distLine, false);
         HideFallback();
         return;
     }
@@ -641,9 +923,10 @@ void TickDroneSpeedometer()
         return;
     g_smoothed = g_smoothed < 0.0f ? speed : g_smoothed + (speed - g_smoothed) * kSmoothing;
 
-    char shown[48];
-    FormatSpeed(g_smoothed, shown, sizeof(shown));
-    if (ShowUnderReadout(character, shown, now))
+    char number[32] = {};
+    char unit[16]   = {};
+    SpeedParts(g_smoothed, number, sizeof(number), unit, sizeof(unit));
+    if (ShowUnderReadout(character, number, unit, now))
     {
         HideFallback();
         return;
