@@ -189,29 +189,18 @@ namespace DroneFields
 		inline constexpr const char* CheckIfInInterior  = "ACrCharacterPlayerBase::CheckIfInInterior";
 	}
 
-	// The map keys of a feature's fields, as the loader sees them.
-	inline void AddKey(std::vector<const char*>& keys, const char* key) { keys.push_back(key); }
-	inline void AddKey(std::vector<const char*>& keys, const PluginFieldSpec& field) { keys.push_back(field.key); }
-
-	template <class... Key>
-	std::vector<const char*> KeysOf(const Key&... keys)
-	{
-		std::vector<const char*> all;
-		(AddKey(all, keys), ...);
-		return all;
-	}
-
 	// The parts of BetterDrone that can be off while the rest runs. Each lists
-	// the keys only it needs; a key two parts need (the drone, its camera, the
-	// player controller, the gem attributes, the drone's sphere) is left out,
-	// so a miss there still refuses the plugin. Declared in OnPluginLoadHooks
-	// before any key is resolved. Every entry point of a part checks On(), so
+	// every key it uses, a key two parts use in both. A key stays core only
+	// when the plugin can do nothing without it: the drone, the pilot's status
+	// and dead flag, and the player controller's character. A miss on those
+	// still refuses the plugin. Declared in OnPluginLoadHooks before any key
+	// is resolved. Every entry point of a part checks On(), so
 	// an off part runs nothing and reads none of its keys or config entries.
 	namespace Features
 	{
 		inline PluginMap::Feature MiningLaser{ "mining-laser", "Mining laser",
-			KeysOf(Keys::MineActor, Keys::MineIsm,
-				MiningComponent, WeaponSystem, WeaponAttributes, AbilitySystem,
+			PluginMap::KeysOf(Keys::MineActor, Keys::MineIsm,
+				DroneCamera, GemAttributes, MiningComponent, WeaponSystem, WeaponAttributes, AbilitySystem,
 				HarvesterMiningDamage, FireRateMod, LastEquippedUnarmed, EquippedWeapon, EquippedItemData,
 				MiningTypeDamage, RoundsPerMinute, BaseRange, MaxStack, CurrentlyMinedOre, MinedOreActor,
 				MinedVeinMaterial, MinedVeinData, VeinResource, VeinGrantCount, OreData, OreResource,
@@ -221,51 +210,51 @@ namespace DroneFields
 			{ "Controls.Mining Laser Key" } };
 
 		inline PluginMap::Feature MapReveal{ "map-reveal", "Drone uncovers the map",
-			KeysOf(Keys::UncoverFog, FogUncoverRadius, MinFootstepDistance, FogRadiusMultiplier),
+			PluginMap::KeysOf(Keys::UncoverFog, GemAttributes, FogUncoverRadius, MinFootstepDistance, FogRadiusMultiplier),
 			{ "Interaction.Drone Reveals Map" } };
 
 		inline PluginMap::Feature MapMarker{ "map-marker", "Drone marker on the map",
-			KeysOf(MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
+			PluginMap::KeysOf(MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
 				MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint,
 				MarkerColorData, MarkerPlayerColour, MarkerItemSize, MarkerRepresentationSize),
 			{} };
 
 		inline PluginMap::Feature Limits{ "drone-limits", "Drone speed, boost, size and limits",
-			KeysOf(PlacementDeveloperSettings, SpeedPerSec, MaxRadius, WarningRadius, MaxHeight,
-				WarningHeight, SphereRadius),
+			PluginMap::KeysOf(PlacementDeveloperSettings, SpeedPerSec, MaxRadius, WarningRadius, MaxHeight,
+				WarningHeight, SphereRadius, SphereComponent),
 			{ "Controls.Boost Key" } };
 
 		inline PluginMap::Feature SprintKey{ "sprint-key", "Following the game's Sprint key",
-			KeysOf(NativeInputActions, NativeInputAction, NativeInputHandler, NativeInputActionSize),
+			PluginMap::KeysOf(NativeInputActions, NativeInputAction, NativeInputHandler, NativeInputActionSize),
 			{} };
 
 		inline PluginMap::Feature AlwaysAllow{ "always-allow", "Drone allowed during wave events",
-			KeysOf(Keys::CanDroneBeActive),
+			PluginMap::KeysOf(Keys::CanDroneBeActive),
 			{ "Drone.Always Allow Drone" } };
 
 		inline PluginMap::Feature WaveShelter{ "wave-shelter", "Drone does not count toward the wave shelter",
-			KeysOf(Keys::CheckIfInInterior, DroneCameraColl, IsSafeInterior),
+			PluginMap::KeysOf(Keys::CheckIfInInterior, DroneCameraColl, IsSafeInterior),
 			{} };
 
 		inline PluginMap::Feature Interaction{ "drone-interact", "Open containers and doors from the drone",
-			KeysOf(Keys::TargetsChanged, Keys::InteractStarted, Keys::InteractCompleted, Keys::Interact,
-				CurrentInteractableActor, PlayerControlState),
+			PluginMap::KeysOf(Keys::TargetsChanged, Keys::InteractStarted, Keys::InteractCompleted, Keys::Interact,
+				CurrentInteractableActor, PlayerControlState, DroneCamera),
 			{ "Interaction.Interact In Drone Mode", "Interaction.Interact Key" } };
 
 		inline PluginMap::Feature MapOpen{ "drone-map", "Open the map from the drone",
-			KeysOf(Keys::MapMenu),
+			PluginMap::KeysOf(Keys::MapMenu),
 			{ "Interaction.Map In Drone Mode", "Interaction.Map Key" } };
 
 		inline PluginMap::Feature BuildMenu{ "build-menu", "Closing the building menu keeps the drone",
-			KeysOf(Keys::CancelTool, Keys::HandleDeactivate, BuildingMenuPlayer),
+			PluginMap::KeysOf(Keys::CancelTool, Keys::HandleDeactivate, BuildingMenuPlayer),
 			{} };
 
 		inline PluginMap::Feature Speedometer{ "speedometer", "Speedometer on the drone HUD",
-			KeysOf(HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM),
+			PluginMap::KeysOf(HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM),
 			{} };
 
 		inline PluginMap::Feature Audio{ "drone-audio", "Drone sound volumes",
-			KeysOf(IdleSound, MovementSound, RotationSound, StateAudioComponents),
+			PluginMap::KeysOf(IdleSound, MovementSound, RotationSound, StateAudioComponents),
 			{} };
 
 		// Declares them all. Call first in OnPluginLoadHooks.
@@ -291,12 +280,7 @@ namespace DroneFields
 	}
 
 	// The member's value, or a fallback when the object is null.
-	template <class T, class Object>
-	T ValueOr(const PluginField<T>& field, const Object* object, T fallback = T{})
-	{
-		const T* at = field.In(static_cast<const void*>(object));
-		return at ? *at : fallback;
-	}
+	using PluginMap::ValueOr;
 
 	// The loader's property reader for Blueprint members, or null.
 	inline const IPluginObjectProperties* ObjectProperties()
