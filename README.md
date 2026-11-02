@@ -69,6 +69,7 @@ Hold **G** (rebindable on the loader's Config page, Controls) while flying to mi
 - **Aim:** a 25 cm sphere catches small ore beside the crosshair. The target holds 0.35 s through a miss.
 - **Heat:** one stack per 0.2 s, overheat at 100. Cooling starts after 8 s (15 s after an overheat), then one stack per 0.82 s.
 - **Heat ring:** around the crosshair, filling clockwise from 12 o'clock in your marker colour, orange by 75%, red by 90%. Dims while cooling holds, shrinks as it drains, pulses from 85%, flashes red while locked out.
+- **Vent:** press the game's Reload key (R unless rebound) in the drone to vent the heat as the mining tool's R does: the stacks come off 0.04 s each, plus 4 s when overheated, and the overheat ends with the last one. Firing stops a vent that is not overheated. The timing is read from the game's forced cooldown ability.
 - **Drill:** its heat is read, never changed; the unlimited heat tag (BetterCheats' No Handheld Drill Overheat) means no heat. Fire rate follows the drill's bonuses as last seen in hand. BetterCheats' Mining Damage, Range, Hit Rate and Overheat Cooldown rows apply.
 
 ### Floor guard

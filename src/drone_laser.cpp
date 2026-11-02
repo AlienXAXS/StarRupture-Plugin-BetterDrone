@@ -5,6 +5,7 @@
 #include "drone_key_vk.h"
 #include "drone_laser_fx.h"
 #include "drone_map_marker.h"
+#include "drone_sprint_key.h"
 #include "mining_natives.h"
 #include "named_object.h"
 #include "object_ref.h"
@@ -35,6 +36,7 @@ namespace
     constexpr const char* kCoolingAbilityCdoName  = "Default__GA_MiningToolPassiveCooling_C";
     constexpr const char* kHeatOverTimeCdoName    = "Default__GE_WeaponHeatOverTimeBase_C";
     constexpr const char* kHeatStackCdoName       = "Default__GE_WeaponHeatStackBase_C";
+    constexpr const char* kForcedCooldownCdoName  = "Default__GA_MiningToolForcedCooldown_C";
 
     // The mining tool's heat: while it fires, GE_WeaponHeatOverTimeBase adds
     // one stack of GE_WeaponHeatStackBase every Period, up to the stack
@@ -51,6 +53,14 @@ namespace
     constexpr float kStockStackCoolSeconds  = 0.82f;
     constexpr float kStockCoolDelay         = 8.0f;
     constexpr float kStockOverheatCoolDelay = 15.0f;
+
+    // The vent on the Reload key is the tool's forced cooldown ability
+    // (GA_MiningToolForcedCooldown): it takes the stacks off one at a time over
+    // Count x SingleStackDuration seconds, plus PenaltyDuration when the tool
+    // is overheated, and the overheat ends with the last stack. These are its
+    // stock values, for while its defaults are not loaded.
+    constexpr float kStockVentStackSeconds = 0.04f;
+    constexpr float kStockVentPenalty      = 4.0f;
 
     // The game level the tool's heating effect is applied at.
     constexpr float kHeatEffectLevel = 1.0f;
@@ -133,6 +143,9 @@ namespace
         NamedObject                         heatOverTime{ kHeatOverTimeCdoName };
         NamedObject                         heatStack{ kHeatStackCdoName };
 
+        // The forced cooldown ability's defaults, for the vent's timing.
+        NamedObject                         forcedCooldown{ kForcedCooldownCdoName };
+
         // The fire rate multiplier the character carries while the drill is
         // in hand (its upgrades and buffs), as last seen on foot. In the
         // drone the attribute holds the building tool's instead.
@@ -158,14 +171,38 @@ namespace
         bool  firing     = false;   // last tick
         bool  overheated = false;   // locked out until the heat is gone
 
+        // The vent: the stacks come off one every ventStackSeconds, whatever
+        // the delay or the passive cooling say, until none are left.
+        bool  venting          = false;
+        float ventClock        = 0.0f;   // vent time toward the next stack off
+        float ventStackSeconds = 0.0f;   // set when the vent starts
+
         float stackSeconds      = kStockHeatStackSeconds;
         int   stackLimit        = kStockHeatStackLimit;
         float stackCoolSeconds  = kStockStackCoolSeconds;
         float coolDelay         = kStockCoolDelay;
         float overheatCoolDelay = kStockOverheatCoolDelay;
+        float ventSingleStack   = kStockVentStackSeconds;
+        float ventPenalty       = kStockVentPenalty;
     };
 
     Heat g_heat;
+
+    // The game's Reload key, polled on the tick like the Sprint key: the
+    // loader cannot dispatch a keybind for a key it does not own. Game thread
+    // only (no keybind callback is involved, so nothing here is shared).
+    struct ReloadKey
+    {
+        int       vk             = 0;
+        bool      down           = false;   // last tick
+        bool      pending        = true;    // the key is not settled yet
+        bool      fromApplied    = false;   // from the applied mappings, so a context default must not replace it
+        bool      fallbackLogged = false;
+        int       tries          = 0;
+        ULONGLONG triedMs        = 0;
+    };
+
+    ReloadKey g_reload;
 
     // What the tick decided: whether the laser fires, and at what.
     struct Frame
@@ -714,6 +751,60 @@ namespace
         }
     }
 
+    // The vent's timing from the forced cooldown ability's defaults, read as
+    // each firing starts (so the defaults are found before the first press)
+    // and as each vent does. Anything out of reason, or not loaded yet, keeps
+    // the value it has; if the defaults are there but cannot be read, that is
+    // logged once. Checked against the native base class.
+    void ReadVentNumbers()
+    {
+        static bool logged = false;
+
+        auto* ability = g_s.forcedCooldown.Resolve(SDK::UCrGameplayAbility::StaticClass());
+        const IPluginObjectProperties* properties = DroneFields::ObjectProperties();
+        const float*  single  = DroneFields::VentSingleStackDuration.In(properties, ability);
+        const double* penalty = DroneFields::VentPenaltyDuration.In(properties, ability);
+        if (single && *single > 0.0f && *single <= 60.0f && penalty && *penalty >= 0.0 && *penalty <= 600.0)
+        {
+            g_heat.ventSingleStack = *single;
+            g_heat.ventPenalty     = static_cast<float>(*penalty);
+            if (!logged)
+            {
+                logged = true;
+                LOG_INFO("DroneLaser: vent timing from the game: %.3f s per stack, %.1f s more when overheated",
+                    g_heat.ventSingleStack, g_heat.ventPenalty);
+            }
+        }
+        else if (ability && !logged)
+        {
+            logged = true;
+            LOG_WARN("DroneLaser: the forced cooldown timing could not be read; the vent uses %.3f s per stack and %.1f s more when overheated",
+                g_heat.ventSingleStack, g_heat.ventPenalty);
+        }
+    }
+
+    // The Reload press: vents the heat as the tool's forced cooldown does.
+    // Nothing happens with no heat, while firing, or while a vent is under
+    // way. The vent lasts Count x SingleStackDuration (and PenaltyDuration
+    // more when overheated), each stack coming off after an equal share.
+    // Returns whether a vent started.
+    bool StartVent(Heat& h)
+    {
+        if (h.venting || h.firing || h.stacks <= 0)
+            return false;
+
+        const float duration = static_cast<float>(h.stacks) * h.ventSingleStack
+                             + (h.overheated ? h.ventPenalty : 0.0f);
+        h.ventStackSeconds = duration / static_cast<float>(h.stacks);
+        h.ventClock        = 0.0f;
+        h.venting          = true;
+        h.riseClock        = 0.0f;
+        h.delay            = 0.0f;
+        h.drainClock       = 0.0f;
+        LOG_DEBUG("DroneLaser: venting %d stacks over %.2f s", h.stacks, duration);
+        return true;
+    }
+
     // One tick of heat. Firing adds a stack every stackSeconds and holds off
     // the cooling; the application past the limit overheats, as the stack
     // effect's overflow does. With unlimited heat, firing still holds off the
@@ -721,6 +812,32 @@ namespace
     // drains a stack at a time. Returns true on the tick the laser overheats.
     bool UpdateHeat(Heat& h, bool firing, bool unlimited, float deltaSeconds)
     {
+        // Firing breaks off a vent (an overheated laser cannot fire, so that
+        // vent always runs to the end); otherwise the vent owns the cooling.
+        if (h.venting)
+        {
+            if (!firing)
+            {
+                h.ventClock += deltaSeconds;
+                while (h.ventClock >= h.ventStackSeconds && h.stacks > 0)
+                {
+                    h.ventClock -= h.ventStackSeconds;
+                    --h.stacks;
+                }
+
+                if (h.stacks == 0)
+                {
+                    h.venting    = false;
+                    h.ventClock  = 0.0f;
+                    h.overheated = false;
+                }
+                return false;
+            }
+
+            h.venting   = false;
+            h.ventClock = 0.0f;
+        }
+
         if (firing)
         {
             if (!h.firing || unlimited)
@@ -788,6 +905,8 @@ namespace
         float stacks = static_cast<float>(h.stacks);
         if (h.firing)
             stacks += h.riseClock / h.stackSeconds;
+        else if (h.venting)
+            stacks -= h.ventClock / h.ventStackSeconds;
         else if (h.delay <= 0.0f && h.stacks > 0)
             stacks -= h.drainClock / h.stackCoolSeconds;
 
@@ -817,6 +936,72 @@ namespace
             view.scale = 1.0f;
         view.baseColour = PlayerMarkerColour();
         PublishDroneHeat(&view);
+    }
+
+    // ---- the Reload key ---------------------------------------------------------
+
+    // Quick at first, for the load, then rare: a miss that lasts is not going
+    // to clear by being asked every two seconds.
+    ULONGLONG ReloadRetryMs()
+    {
+        return g_reload.tries < 5 ? 2000 : 30000;
+    }
+
+    // Looks up the game's current Reload key, as the boost key follows Sprint:
+    // a miss before the world and its input exist is not an answer and is
+    // repeated; R stands in, logged once, only when Reload has no keyboard
+    // binding or the lookup still misses with the player in the drone; a later
+    // success replaces it.
+    void ResolveReloadKey(bool inDrone)
+    {
+        char keyName[64] = {};
+        InputLookup status = InputLookup::NotReady;
+        const char* why = nullptr;
+        const int vk = ResolveInputHandlerVk(SDK::UCrInputWeaponReload::StaticClass(),
+            keyName, sizeof(keyName), &status, &why);
+        g_reload.triedMs = GetTickCount64();
+        ++g_reload.tries;
+
+        if (vk != 0)
+        {
+            // The context default is only the stand-in for an applied key
+            // that is out of reach for the moment.
+            if (status == InputLookup::FoundDefault && g_reload.fromApplied)
+                return;
+
+            g_reload.fromApplied = status == InputLookup::Found;
+            g_reload.pending     = !g_reload.fromApplied;
+            if (g_reload.vk != vk)
+            {
+                g_reload.vk = vk;
+                LOG_INFO("DroneLaser: heat vent on the game's Reload key (%s)", keyName);
+            }
+            return;
+        }
+
+        g_reload.pending = status != InputLookup::NoKeyboardBinding;
+        if (status != InputLookup::NoKeyboardBinding && !inDrone)
+            return;
+
+        g_reload.vk = 'R';
+        if (!g_reload.fallbackLogged)
+        {
+            g_reload.fallbackLogged = true;
+            LOG_WARN("DroneLaser: could not resolve the game's Reload key (%s), using R",
+                why ? why : "unknown");
+        }
+    }
+
+    // True on the tick the Reload key goes down.
+    bool ReloadPressed(bool inDrone)
+    {
+        if (g_reload.pending && GetTickCount64() - g_reload.triedMs >= ReloadRetryMs())
+            ResolveReloadKey(inDrone);
+
+        const bool down = g_reload.vk != 0 && (GetAsyncKeyState(g_reload.vk) & 0x8000) != 0 && GameHasFocus();
+        const bool pressed = down && !g_reload.down;
+        g_reload.down = down;
+        return pressed;
     }
 
     // ---- the tick -------------------------------------------------------------
@@ -1049,8 +1234,9 @@ void ShutdownDroneLaser(IPluginSelf* self)
     else
         StopMining("plugin shutdown");
 
-    g_s    = LaserState{};
-    g_heat = Heat{};
+    g_s      = LaserState{};
+    g_heat   = Heat{};
+    g_reload = ReloadKey{};
 }
 
 void TickDroneLaser(float deltaSeconds)
@@ -1061,7 +1247,20 @@ void TickDroneLaser(float deltaSeconds)
     TickImpl(frame, deltaSeconds);
 
     if (frame.firing && !g_heat.firing)
+    {
         ReadHeatNumbers();
+        ReadVentNumbers();
+    }
+
+    // Reload vents the heat, in the drone with no menu open. The key is
+    // polled every tick, so a key already down is not read as a fresh press
+    // later.
+    const bool inDrone = IsLocalPlayerInDrone();
+    if (ReloadPressed(inDrone) && inDrone && !IsGameMenuOpen() && !frame.firing)
+    {
+        ReadVentNumbers();
+        StartVent(g_heat);
+    }
 
     // Heat runs every tick, in the drone or not, so it cools on foot too.
     const bool unlimited = frame.firing && UnlimitedHeat(frame.character);
