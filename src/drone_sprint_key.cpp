@@ -5,6 +5,7 @@
 #include <EnhancedInput_classes.hpp>
 #include <cstdio>
 #include <string>
+#include <windows.h>
 
 namespace
 {
@@ -216,4 +217,56 @@ int ResolveInputHandlerVk(const SDK::UClass* handlerClass, char* outKeyName, siz
 int ResolveSprintVk(char* outKeyName, size_t outKeyNameSize, InputLookup* outStatus, const char** outWhy)
 {
     return ResolveInputHandlerVk(SDK::UCrInputSprint::StaticClass(), outKeyName, outKeyNameSize, outStatus, outWhy);
+}
+
+void FollowedKey::Restart()
+{
+    *this = FollowedKey{};
+}
+
+bool FollowedKey::Due() const
+{
+    return pending && GetTickCount64() - triedMs >= (tries < 5 ? 2000ULL : 30000ULL);
+}
+
+FollowedKey::Result FollowedKey::Resolve(const SDK::UClass* handlerClass, bool inDrone, int fallbackVk,
+                                         char* keyName, size_t keyNameSize)
+{
+    Result result;
+    InputLookup status = InputLookup::NotReady;
+    const char* why = nullptr;
+    const int found = ResolveInputHandlerVk(handlerClass, keyName, keyNameSize, &status, &why);
+    triedMs = GetTickCount64();
+    ++tries;
+
+    if (found != 0)
+    {
+        // The context default is only the stand-in for an applied key that is
+        // out of reach for the moment.
+        if (status == InputLookup::FoundDefault && fromApplied)
+            return result;
+
+        fromApplied = status == InputLookup::Found;
+        pending     = !fromApplied;
+        if (vk != found)
+        {
+            vk = found;
+            result.followed = true;
+        }
+        return result;
+    }
+
+    pending = status != InputLookup::NoKeyboardBinding;
+    if (status != InputLookup::NoKeyboardBinding && !inDrone)
+        return result;
+
+    vk = fallbackVk;
+    result.fellBack = true;
+    result.why      = why ? why : "unknown";
+    if (!fallbackLogged)
+    {
+        fallbackLogged       = true;
+        result.firstFallback = true;
+    }
+    return result;
 }

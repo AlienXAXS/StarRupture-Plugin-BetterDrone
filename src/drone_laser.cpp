@@ -184,6 +184,7 @@ namespace
         float overheatCoolDelay = kStockOverheatCoolDelay;
         float ventSingleStack   = kStockVentStackSeconds;
         float ventPenalty       = kStockVentPenalty;
+        bool  ventLogged        = false;   // the timing's source has been logged
     };
 
     Heat g_heat;
@@ -191,18 +192,9 @@ namespace
     // The game's Reload key, polled on the tick like the Sprint key: the
     // loader cannot dispatch a keybind for a key it does not own. Game thread
     // only (no keybind callback is involved, so nothing here is shared).
-    struct ReloadKey
-    {
-        int       vk             = 0;
-        bool      down           = false;   // last tick
-        bool      pending        = true;    // the key is not settled yet
-        bool      fromApplied    = false;   // from the applied mappings, so a context default must not replace it
-        bool      fallbackLogged = false;
-        int       tries          = 0;
-        ULONGLONG triedMs        = 0;
-    };
-
-    ReloadKey g_reload;
+    FollowedKey g_reloadKey;
+    bool        g_reloadDown    = false;   // last tick
+    bool        g_reloadInDrone = false;   // last tick
 
     // What the tick decided: whether the laser fires, and at what.
     struct Frame
@@ -752,14 +744,11 @@ namespace
     }
 
     // The vent's timing from the forced cooldown ability's defaults, read as
-    // each firing starts (so the defaults are found before the first press)
-    // and as each vent does. Anything out of reason, or not loaded yet, keeps
-    // the value it has; if the defaults are there but cannot be read, that is
+    // each vent starts. Anything out of reason, or not loaded yet, keeps the
+    // value it has; if the defaults are there but cannot be read, that is
     // logged once. Checked against the native base class.
     void ReadVentNumbers()
     {
-        static bool logged = false;
-
         auto* ability = g_s.forcedCooldown.Resolve(SDK::UCrGameplayAbility::StaticClass());
         const IPluginObjectProperties* properties = DroneFields::ObjectProperties();
         const float*  single  = DroneFields::VentSingleStackDuration.In(properties, ability);
@@ -768,16 +757,16 @@ namespace
         {
             g_heat.ventSingleStack = *single;
             g_heat.ventPenalty     = static_cast<float>(*penalty);
-            if (!logged)
+            if (!g_heat.ventLogged)
             {
-                logged = true;
+                g_heat.ventLogged = true;
                 LOG_INFO("DroneLaser: vent timing from the game: %.3f s per stack, %.1f s more when overheated",
                     g_heat.ventSingleStack, g_heat.ventPenalty);
             }
         }
-        else if (ability && !logged)
+        else if (ability && !g_heat.ventLogged)
         {
-            logged = true;
+            g_heat.ventLogged = true;
             LOG_WARN("DroneLaser: the forced cooldown timing could not be read; the vent uses %.3f s per stack and %.1f s more when overheated",
                 g_heat.ventSingleStack, g_heat.ventPenalty);
         }
@@ -940,67 +929,27 @@ namespace
 
     // ---- the Reload key ---------------------------------------------------------
 
-    // Quick at first, for the load, then rare: a miss that lasts is not going
-    // to clear by being asked every two seconds.
-    ULONGLONG ReloadRetryMs()
-    {
-        return g_reload.tries < 5 ? 2000 : 30000;
-    }
-
-    // Looks up the game's current Reload key, as the boost key follows Sprint:
-    // a miss before the world and its input exist is not an answer and is
-    // repeated; R stands in, logged once, only when Reload has no keyboard
-    // binding or the lookup still misses with the player in the drone; a later
-    // success replaces it.
-    void ResolveReloadKey(bool inDrone)
-    {
-        char keyName[64] = {};
-        InputLookup status = InputLookup::NotReady;
-        const char* why = nullptr;
-        const int vk = ResolveInputHandlerVk(SDK::UCrInputWeaponReload::StaticClass(),
-            keyName, sizeof(keyName), &status, &why);
-        g_reload.triedMs = GetTickCount64();
-        ++g_reload.tries;
-
-        if (vk != 0)
-        {
-            // The context default is only the stand-in for an applied key
-            // that is out of reach for the moment.
-            if (status == InputLookup::FoundDefault && g_reload.fromApplied)
-                return;
-
-            g_reload.fromApplied = status == InputLookup::Found;
-            g_reload.pending     = !g_reload.fromApplied;
-            if (g_reload.vk != vk)
-            {
-                g_reload.vk = vk;
-                LOG_INFO("DroneLaser: heat vent on the game's Reload key (%s)", keyName);
-            }
-            return;
-        }
-
-        g_reload.pending = status != InputLookup::NoKeyboardBinding;
-        if (status != InputLookup::NoKeyboardBinding && !inDrone)
-            return;
-
-        g_reload.vk = 'R';
-        if (!g_reload.fallbackLogged)
-        {
-            g_reload.fallbackLogged = true;
-            LOG_WARN("DroneLaser: could not resolve the game's Reload key (%s), using R",
-                why ? why : "unknown");
-        }
-    }
-
-    // True on the tick the Reload key goes down.
+    // True on the tick the Reload key goes down. The key is looked up again on
+    // each entry to the drone, which picks up a rebind made in the game's
+    // Controls, and on the retry timer while it is not settled; R stands in,
+    // logged once, as the boost key's LeftShift does.
     bool ReloadPressed(bool inDrone)
     {
-        if (g_reload.pending && GetTickCount64() - g_reload.triedMs >= ReloadRetryMs())
-            ResolveReloadKey(inDrone);
+        if ((inDrone && !g_reloadInDrone) || g_reloadKey.Due())
+        {
+            char keyName[64] = {};
+            const FollowedKey::Result result = g_reloadKey.Resolve(
+                SDK::UCrInputWeaponReload::StaticClass(), inDrone, 'R', keyName, sizeof(keyName));
+            if (result.followed)
+                LOG_INFO("DroneLaser: heat vent on the game's Reload key (%s)", keyName);
+            else if (result.firstFallback)
+                LOG_WARN("DroneLaser: could not resolve the game's Reload key (%s), using R", result.why);
+        }
+        g_reloadInDrone = inDrone;
 
-        const bool down = g_reload.vk != 0 && (GetAsyncKeyState(g_reload.vk) & 0x8000) != 0 && GameHasFocus();
-        const bool pressed = down && !g_reload.down;
-        g_reload.down = down;
+        const bool down = g_reloadKey.vk != 0 && (GetAsyncKeyState(g_reloadKey.vk) & 0x8000) != 0 && GameHasFocus();
+        const bool pressed = down && !g_reloadDown;
+        g_reloadDown = down;
         return pressed;
     }
 
@@ -1236,7 +1185,9 @@ void ShutdownDroneLaser(IPluginSelf* self)
 
     g_s      = LaserState{};
     g_heat   = Heat{};
-    g_reload = ReloadKey{};
+    g_reloadKey      = FollowedKey{};
+    g_reloadDown     = false;
+    g_reloadInDrone  = false;
 }
 
 void TickDroneLaser(float deltaSeconds)
@@ -1247,10 +1198,7 @@ void TickDroneLaser(float deltaSeconds)
     TickImpl(frame, deltaSeconds);
 
     if (frame.firing && !g_heat.firing)
-    {
         ReadHeatNumbers();
-        ReadVentNumbers();
-    }
 
     // Reload vents the heat, in the drone with no menu open. The key is
     // polled every tick, so a key already down is not read as a fresh press
