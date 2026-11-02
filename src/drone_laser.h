@@ -20,15 +20,16 @@
 // world gone, the drill or the laser overheated, the bag unable to take the
 // next grant, and plugin shutdown. A full bag or an overheated drill keeps
 // the laser off until the key is pressed again; an overheated laser keeps it
-// off until it has cooled.
+// off until it has cooled or been vented.
 //
 // It looks, sounds and heats like the mining tool: the tool's beam and sound
 // cues (drone_laser_fx.h), and a heat count of the laser's own with the
 // tool's numbers, shown as a ring around the crosshair (drone_heat_ring.h).
-// The drill's own heat is read, not changed.
+// The drill's own heat is read, not changed. The game's Reload key vents the
+// laser's heat the way the tool's forced cooldown does.
 //
-// Game thread only: the key callback only stores an atomic, and every
-// UObject is reached from the tick. Nothing is kept across ticks but
+// Game thread only: the key callback only stores an atomic, the Reload key
+// is polled on the tick, and every UObject is reached from the tick. Nothing is kept across ticks but
 // ObjectRefs.
 
 struct IPluginSelf;

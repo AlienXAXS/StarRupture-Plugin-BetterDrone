@@ -154,6 +154,13 @@ namespace DroneFields
 	inline PluginLazyField<float>                      DefaultStartDelay{ "DefaultStartDelayDuration" };
 	inline PluginLazyField<float>                      OverheatStartDelay{ "OverheatStartDelayDuration" };
 
+	// The forced cooldown ability's defaults (the vent on the Reload key). Its
+	// SingleStackDuration is a float, unlike the passive cooling's above, and
+	// each field caches the class it was last read from, so these are rows of
+	// their own.
+	inline PluginLazyField<float>                      VentSingleStackDuration{ "SingleStackDuration" };
+	inline PluginLazyField<double>                     VentPenaltyDuration{ "PenaltyDuration" };
+
 	// Asks the loader for every row above. False when any did not resolve; the
 	// loader has then recorded the failure and refuses the plugin.
 	inline bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
