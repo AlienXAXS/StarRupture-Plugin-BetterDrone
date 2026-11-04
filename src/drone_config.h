@@ -36,6 +36,8 @@ namespace DroneConfig
         // Loader-page settings: stored in BetterDrone.ini via IPluginConfig,
         // editable from the ModLoader settings window.
         static bool ReadAlwaysAllowDrone();
+        static bool ReadKeepBodyLoaded();
+        static float ReadBodyAreaRadius();   // metres
         static bool ReadInteractInDroneMode();
         static void ReadInteractKey(char* outBuffer, int bufferSize);
         static bool ReadMapInDroneMode();
@@ -83,6 +85,11 @@ namespace DroneConfig
 
         static void  ReadSpeedUnit(char* outBuffer, int bufferSize);
         static void  WriteSpeedUnit(const char* unit);
+
+        // The speedometer under the drone HUD's distance readout. Cached like the unit, so the
+        // tick reads memory, not the file.
+        static bool  ReadSpeedometer();
+        static void  WriteSpeedometer(bool enabled);
 
         // Applies to boosted speed too, not just the base setting.
         static float MaxSpeedPerSec();

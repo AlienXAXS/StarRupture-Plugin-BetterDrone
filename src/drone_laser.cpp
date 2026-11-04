@@ -5,10 +5,12 @@
 #include "drone_key_vk.h"
 #include "drone_laser_fx.h"
 #include "drone_map_marker.h"
+#include "drone_sprint_key.h"
 #include "mining_natives.h"
 #include "named_object.h"
 #include "object_ref.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <plugin_interface.h>
 #include <Chimera_classes.hpp>
 #include <Engine_classes.hpp>
@@ -34,6 +36,7 @@ namespace
     constexpr const char* kCoolingAbilityCdoName  = "Default__GA_MiningToolPassiveCooling_C";
     constexpr const char* kHeatOverTimeCdoName    = "Default__GE_WeaponHeatOverTimeBase_C";
     constexpr const char* kHeatStackCdoName       = "Default__GE_WeaponHeatStackBase_C";
+    constexpr const char* kForcedCooldownCdoName  = "Default__GA_MiningToolForcedCooldown_C";
 
     // The mining tool's heat: while it fires, GE_WeaponHeatOverTimeBase adds
     // one stack of GE_WeaponHeatStackBase every Period, up to the stack
@@ -50,6 +53,14 @@ namespace
     constexpr float kStockStackCoolSeconds  = 0.82f;
     constexpr float kStockCoolDelay         = 8.0f;
     constexpr float kStockOverheatCoolDelay = 15.0f;
+
+    // The vent on the Reload key is the tool's forced cooldown ability
+    // (GA_MiningToolForcedCooldown): it takes the stacks off one at a time over
+    // Count x SingleStackDuration seconds, plus PenaltyDuration when the tool
+    // is overheated, and the overheat ends with the last stack. These are its
+    // stock values, for while its defaults are not loaded.
+    constexpr float kStockVentStackSeconds = 0.04f;
+    constexpr float kStockVentPenalty      = 4.0f;
 
     // The game level the tool's heating effect is applied at.
     constexpr float kHeatEffectLevel = 1.0f;
@@ -79,7 +90,6 @@ namespace
     // Written by the key callback, read by the tick.
     std::atomic<bool>  g_keyHeld{ false };
     std::atomic<int>   g_keyVk{ 0 };
-    std::atomic<DWORD> g_gameThreadId{ 0 };
 
     // The names the key is registered under, kept so exactly those are
     // unregistered again.
@@ -133,6 +143,9 @@ namespace
         NamedObject                         heatOverTime{ kHeatOverTimeCdoName };
         NamedObject                         heatStack{ kHeatStackCdoName };
 
+        // The forced cooldown ability's defaults, for the vent's timing.
+        NamedObject                         forcedCooldown{ kForcedCooldownCdoName };
+
         // The fire rate multiplier the character carries while the drill is
         // in hand (its upgrades and buffs), as last seen on foot. In the
         // drone the attribute holds the building tool's instead.
@@ -158,14 +171,30 @@ namespace
         bool  firing     = false;   // last tick
         bool  overheated = false;   // locked out until the heat is gone
 
+        // The vent: the stacks come off one every ventStackSeconds, whatever
+        // the delay or the passive cooling say, until none are left.
+        bool  venting          = false;
+        float ventClock        = 0.0f;   // vent time toward the next stack off
+        float ventStackSeconds = 0.0f;   // set when the vent starts
+
         float stackSeconds      = kStockHeatStackSeconds;
         int   stackLimit        = kStockHeatStackLimit;
         float stackCoolSeconds  = kStockStackCoolSeconds;
         float coolDelay         = kStockCoolDelay;
         float overheatCoolDelay = kStockOverheatCoolDelay;
+        float ventSingleStack   = kStockVentStackSeconds;
+        float ventPenalty       = kStockVentPenalty;
+        bool  ventLogged        = false;   // the timing's source has been logged
     };
 
     Heat g_heat;
+
+    // The game's Reload key, polled on the tick like the Sprint key: the
+    // loader cannot dispatch a keybind for a key it does not own. Game thread
+    // only (no keybind callback is involved, so nothing here is shared).
+    FollowedKey g_reloadKey;
+    bool        g_reloadDown    = false;   // last tick
+    bool        g_reloadInDrone = false;   // last tick
 
     // What the tick decided: whether the laser fires, and at what.
     struct Frame
@@ -276,7 +305,7 @@ namespace
         // The drone has collision of its own and the camera sits inside it;
         // bIgnoreSelf covers only the character. The array is a view over this
         // stack slot, which the engine copies before the call returns.
-        SDK::AActor* ignoreData[1] = { character->BuildingDrone };
+        SDK::AActor* ignoreData[1] = { DroneFields::ValueOr(DroneFields::BuildingDrone, character) };
         const SDK::TArray<SDK::AActor*> ignore(ignoreData, ignoreData[0] ? 1 : 0, 1);
         const SDK::FLinearColor colour{};
 
@@ -337,10 +366,17 @@ namespace
     // started.
     bool StillMining(SDK::UCrMiningComponent* comp)
     {
-        const SDK::FCrOreMiningState& state = comp->CurrentlyMinedOre;
+        const auto* state = DroneFields::CurrentlyMinedOre.In(comp);
+        if (!state)
+            return false;
+
         if (g_s.kind == OreKind::Actor)
-            return state.OreActor && state.OreActor == g_s.ore.Get();
-        return state.InfiniteOrePhysicalMaterial && state.InfiniteOrePhysicalMaterial == g_s.vein.Get();
+        {
+            SDK::ACrOreActor* mined = DroneFields::ValueOr(DroneFields::MinedOreActor, state);
+            return mined && mined == g_s.ore.Get();
+        }
+        SDK::UPhysicalMaterial* material = DroneFields::ValueOr(DroneFields::MinedVeinMaterial, state);
+        return material && material == g_s.vein.Get();
     }
 
     // The mining damage multiplier the stock tool's damage carries:
@@ -349,8 +385,9 @@ namespace
     // out, as the laser drives neither.
     float DamageMultiplier(SDK::ACrCharacterPlayerBase* character)
     {
-        SDK::UCrGemAttributeSet* gems = character->GemAttributes;
-        return gems ? gems->HarvesterMiningDamageMultiplier.CurrentValue : 1.0f;
+        SDK::UCrGemAttributeSet* gems = DroneFields::ValueOr(DroneFields::GemAttributes, character);
+        const auto* multiplier = DroneFields::HarvesterMiningDamage.In(gems);
+        return multiplier ? multiplier->CurrentValue : 1.0f;
     }
 
     // Whether the player's ability system carries the mining tool's
@@ -362,11 +399,12 @@ namespace
     {
         auto* toolActor = static_cast<SDK::ABP_MiningToolActor_C*>(
             g_s.toolActor.Resolve(SDK::ACrWeaponActor::StaticClass()));
-        SDK::UCrAbilitySystemComponent* abilities = character->AbilitySystem;
-        if (!toolActor || !abilities || toolActor->OverheatTag.TagName.IsNone())
+        SDK::UCrAbilitySystemComponent* abilities = DroneFields::ValueOr(DroneFields::AbilitySystem, character);
+        const SDK::FGameplayTag* overheatTag = DroneFields::OverheatTag.In(DroneFields::ObjectProperties(), toolActor);
+        if (!toolActor || !abilities || !overheatTag || overheatTag->TagName.IsNone())
             return false;
 
-        return abilities->GetGameplayTagCount(toolActor->OverheatTag) > 0;
+        return abilities->GetGameplayTagCount(*overheatTag) > 0;
     }
 
     // Cheat.UnlimitedWeaponHeat, the tag the tool's heating effect requires
@@ -382,7 +420,7 @@ namespace
         if (g_unlimitedHeatTag.TagName.IsNone())
             g_unlimitedHeatTag.TagName = SDK::BasicFilesImplUtils::StringToName(L"Cheat.UnlimitedWeaponHeat");
 
-        SDK::UCrAbilitySystemComponent* abilities = character ? character->AbilitySystem : nullptr;
+        SDK::UCrAbilitySystemComponent* abilities = DroneFields::ValueOr(DroneFields::AbilitySystem, character);
         return abilities && !g_unlimitedHeatTag.TagName.IsNone()
             && abilities->GetGameplayTagCount(g_unlimitedHeatTag) > 0;
     }
@@ -398,13 +436,15 @@ namespace
 
         auto* tool = static_cast<SDK::UCrWeaponItemDataBase*>(
             g_s.toolData.Resolve(SDK::UCrWeaponItemDataBase::StaticClass()));
-        SDK::UCrWeaponComponent*    weapons    = character->WeaponSystem;
-        SDK::UCrWeaponAttributeSet* attributes = character->WeaponAttributes;
-        if (!tool || !weapons || !attributes || weapons->LastEquippedUnarmed
-            || weapons->EquippedWeapon.ItemDataLoaded != tool)
+        SDK::UCrWeaponComponent*    weapons    = DroneFields::ValueOr(DroneFields::WeaponSystem, character);
+        SDK::UCrWeaponAttributeSet* attributes = DroneFields::ValueOr(DroneFields::WeaponAttributes, character);
+        const auto* equipped = DroneFields::EquippedWeapon.In(weapons);
+        const auto* modData  = DroneFields::FireRateMod.In(attributes);
+        if (!tool || !equipped || !modData || DroneFields::ValueOr(DroneFields::LastEquippedUnarmed, weapons, false)
+            || DroneFields::ValueOr(DroneFields::EquippedItemData, equipped) != tool)
             return;
 
-        const float mod = attributes->FireRateModMultiplier.CurrentValue;
+        const float mod = modData->CurrentValue;
         if (mod > 0.0f && mod < 1000.0f)
             g_s.drillFireRateMod = mod;
     }
@@ -451,11 +491,16 @@ namespace
         if (!inventory)
             return true;
 
+        const auto* slots = DroneFields::InventorySlots.In(inventory);
+        if (!slots)
+            return true;
+
         int64_t emptySlots = 0;
-        for (int32_t i = 0; i < inventory->Slots.Num(); ++i)
+        for (int32_t i = 0; i < slots->Num(); ++i)
         {
-            const SDK::FGuid& id = inventory->Slots[i].ItemId.Handle;
-            if ((id.A | id.B | id.C | id.D) == 0)
+            const auto* itemId = DroneFields::SlotItemId.In(&(*slots)[i]);
+            const SDK::FGuid* id = itemId ? DroneFields::ItemIdHandle.In(itemId) : nullptr;
+            if (id && (id->A | id->B | id->C | id->D) == 0)
                 ++emptySlots;
         }
 
@@ -467,7 +512,8 @@ namespace
             if (!item)
                 continue;
 
-            const int64_t stack     = item->MaxStack > 1 ? item->MaxStack : 1;
+            const int64_t maxStack  = DroneFields::ValueOr(DroneFields::MaxStack, item, 0);
+            const int64_t stack     = maxStack > 1 ? maxStack : 1;
             const int64_t room      = amountCanAdd(inventory, item, INT32_MAX);
             const int64_t inStacks  = room - emptySlots * stack;
             const int64_t remaining = grant.count - (inStacks > 0 ? inStacks : 0);
@@ -487,17 +533,27 @@ namespace
     {
         std::vector<Grant> grants;
         auto* oreActor = static_cast<SDK::ACrOreActor*>(ore);
-        if (oreActor->OreData.bIsDepleted || oreActor->OreData.CurrentResourceCount <= 0)
+        const auto* runtime = DroneFields::OreData.In(oreActor);
+        if (!runtime || DroneFields::ValueOr(DroneFields::OreIsDepleted, runtime, false)
+            || DroneFields::ValueOr(DroneFields::OreCurrentCount, runtime, 0) <= 0)
             return grants;
 
-        AddGrant(grants, oreActor->Resource, oreActor->OreData.MaxResourceCount);
+        AddGrant(grants, DroneFields::ValueOr(DroneFields::OreResource, oreActor),
+            DroneFields::ValueOr(DroneFields::OreMaxCount, runtime, 0));
 
-        const auto& spots = oreActor->WeakSpotsDataContainer.Items;
+        const auto* container = DroneFields::OreWeakSpots.In(oreActor);
+        const auto* spotsAt   = container ? DroneFields::WeakSpotItems.In(container) : nullptr;
+        if (!spotsAt)
+            return grants;
+
+        const auto& spots = *spotsAt;
+        const int64_t initMax = DroneFields::ValueOr(DroneFields::OreInitMaxCount, oreActor, 0);
         for (int32_t i = 0; i < spots.Num(); ++i)
         {
             const SDK::FCrWeakSpotRuntimeData& spot = spots[i];
-            const int64_t held = spot.CurrentMiningHealth > 0.0f ? spot.ResourceCount : 0;
-            AddGrant(grants, spot.Resource, held + oreActor->InitMaxCount);
+            const int64_t held = DroneFields::ValueOr(DroneFields::WeakSpotHealth, &spot, 0.0f) > 0.0f
+                ? DroneFields::ValueOr(DroneFields::WeakSpotCount, &spot, 0) : 0;
+            AddGrant(grants, DroneFields::ValueOr(DroneFields::WeakSpotResource, &spot), held + initMax);
         }
         return grants;
     }
@@ -512,7 +568,8 @@ namespace
     bool BagHasRoomForVein(SDK::ACrCharacterPlayerBase* character, const SDK::FCrInfiniteOreData& data)
     {
         std::vector<Grant> grants;
-        AddGrant(grants, data.Resource, data.GrantingMomentResourceCount);
+        AddGrant(grants, DroneFields::ValueOr(DroneFields::VeinResource, &data),
+            DroneFields::ValueOr(DroneFields::VeinGrantCount, &data, 0));
         return BagHasRoom(character, grants);
     }
 
@@ -523,12 +580,13 @@ namespace
     {
         auto* ores = static_cast<SDK::UCrOreSubsystem*>(
             SDK::USubsystemBlueprintLibrary::GetWorldSubsystem(character, SDK::UCrOreSubsystem::StaticClass()));
-        SDK::UCrInfiniteOrePhysMatData* mapping = ores ? ores->InfiniteOrePhysMatMappingData : nullptr;
-        if (!mapping)
+        SDK::UCrInfiniteOrePhysMatData* mapping = DroneFields::ValueOr(DroneFields::OreMappingData, ores);
+        auto* veinsAt = DroneFields::PhysMatOreDataMap.In(mapping);
+        if (!veinsAt)
             return nullptr;
 
         // Not const: the SDK's const TMap indexer does not compile.
-        auto& veins = mapping->PhysMatOreDataMap;
+        auto& veins = *veinsAt;
         for (int32_t i = 0; i < veins.NumAllocated(); ++i)
         {
             if (veins.IsValidIndex(i) && veins[i].Key() == material)
@@ -547,7 +605,9 @@ namespace
             return !ore || BagHasRoomForOre(character, ore);
         }
 
-        return BagHasRoomForVein(character, comp->CurrentlyMinedOre.InfiniteOreData);
+        const auto* state = DroneFields::CurrentlyMinedOre.In(comp);
+        const auto* vein  = state ? DroneFields::MinedVeinData.In(state) : nullptr;
+        return !vein || BagHasRoomForVein(character, *vein);
     }
 
     // Whether a new target can be started: both kinds can grant on the
@@ -607,21 +667,24 @@ namespace
         g_s.comp.Set(comp);
         g_s.mining = false;
 
-        const SDK::FCrOreMiningState& state = comp->CurrentlyMinedOre;
+        const auto* state = DroneFields::CurrentlyMinedOre.In(comp);
+        if (!state)
+            return;
+
         bool took = false;
 
         if (aim.kind == OreKind::Actor)
         {
             // No weak spot: the socket is NAME_None and the flag false.
             reinterpret_cast<MiningNatives::MineActorFn>(g_addrMineActor)(comp, aim.ore, 0, damage, interval, false);
-            took = state.OreActor == aim.ore;
+            took = DroneFields::ValueOr(DroneFields::MinedOreActor, state) == aim.ore;
         }
         else
         {
             // The request checks the material itself and clears the state
             // for anything that is not a vein the player may harvest.
             reinterpret_cast<MiningNatives::MineIsmFn>(g_addrMineIsm)(comp, aim.vein, damage, interval);
-            took = state.InfiniteOrePhysicalMaterial == aim.vein;
+            took = DroneFields::ValueOr(DroneFields::MinedVeinMaterial, state) == aim.vein;
         }
 
         if (!took)
@@ -670,10 +733,65 @@ namespace
         if (auto* cooling = static_cast<SDK::UGA_MiningToolPassiveCooling_C*>(
                 g_s.coolingAbility.Resolve(SDK::UCrGameplayAbility::StaticClass())))
         {
-            g_heat.stackCoolSeconds  = pick(cooling->SingleStackDuration, 0.01, 600.0, kStockStackCoolSeconds);
-            g_heat.coolDelay         = pick(cooling->DefaultStartDelayDuration, 0.0, 600.0, kStockCoolDelay);
-            g_heat.overheatCoolDelay = pick(cooling->OverheatStartDelayDuration, 0.0, 600.0, kStockOverheatCoolDelay);
+            const IPluginObjectProperties* properties = DroneFields::ObjectProperties();
+            const double* singleStack = DroneFields::SingleStackDuration.In(properties, cooling);
+            const float*  coolDelay   = DroneFields::DefaultStartDelay.In(properties, cooling);
+            const float*  overheat    = DroneFields::OverheatStartDelay.In(properties, cooling);
+            g_heat.stackCoolSeconds  = singleStack ? pick(*singleStack, 0.01, 600.0, kStockStackCoolSeconds) : kStockStackCoolSeconds;
+            g_heat.coolDelay         = coolDelay ? pick(*coolDelay, 0.0, 600.0, kStockCoolDelay) : kStockCoolDelay;
+            g_heat.overheatCoolDelay = overheat ? pick(*overheat, 0.0, 600.0, kStockOverheatCoolDelay) : kStockOverheatCoolDelay;
         }
+    }
+
+    // The vent's timing from the forced cooldown ability's defaults, read as
+    // each vent starts. Anything out of reason, or not loaded yet, keeps the
+    // value it has; if the defaults are there but cannot be read, that is
+    // logged once. Checked against the native base class.
+    void ReadVentNumbers()
+    {
+        auto* ability = g_s.forcedCooldown.Resolve(SDK::UCrGameplayAbility::StaticClass());
+        const IPluginObjectProperties* properties = DroneFields::ObjectProperties();
+        const float*  single  = DroneFields::VentSingleStackDuration.In(properties, ability);
+        const double* penalty = DroneFields::VentPenaltyDuration.In(properties, ability);
+        if (single && *single > 0.0f && *single <= 60.0f && penalty && *penalty >= 0.0 && *penalty <= 600.0)
+        {
+            g_heat.ventSingleStack = *single;
+            g_heat.ventPenalty     = static_cast<float>(*penalty);
+            if (!g_heat.ventLogged)
+            {
+                g_heat.ventLogged = true;
+                LOG_INFO("DroneLaser: vent timing from the game: %.3f s per stack, %.1f s more when overheated",
+                    g_heat.ventSingleStack, g_heat.ventPenalty);
+            }
+        }
+        else if (ability && !g_heat.ventLogged)
+        {
+            g_heat.ventLogged = true;
+            LOG_WARN("DroneLaser: the forced cooldown timing could not be read; the vent uses %.3f s per stack and %.1f s more when overheated",
+                g_heat.ventSingleStack, g_heat.ventPenalty);
+        }
+    }
+
+    // The Reload press: vents the heat as the tool's forced cooldown does.
+    // Nothing happens with no heat, while firing, or while a vent is under
+    // way. The vent lasts Count x SingleStackDuration (and PenaltyDuration
+    // more when overheated), each stack coming off after an equal share.
+    // Returns whether a vent started.
+    bool StartVent(Heat& h)
+    {
+        if (h.venting || h.firing || h.stacks <= 0)
+            return false;
+
+        const float duration = static_cast<float>(h.stacks) * h.ventSingleStack
+                             + (h.overheated ? h.ventPenalty : 0.0f);
+        h.ventStackSeconds = duration / static_cast<float>(h.stacks);
+        h.ventClock        = 0.0f;
+        h.venting          = true;
+        h.riseClock        = 0.0f;
+        h.delay            = 0.0f;
+        h.drainClock       = 0.0f;
+        LOG_DEBUG("DroneLaser: venting %d stacks over %.2f s", h.stacks, duration);
+        return true;
     }
 
     // One tick of heat. Firing adds a stack every stackSeconds and holds off
@@ -683,6 +801,32 @@ namespace
     // drains a stack at a time. Returns true on the tick the laser overheats.
     bool UpdateHeat(Heat& h, bool firing, bool unlimited, float deltaSeconds)
     {
+        // Firing breaks off a vent (an overheated laser cannot fire, so that
+        // vent always runs to the end); otherwise the vent owns the cooling.
+        if (h.venting)
+        {
+            if (!firing)
+            {
+                h.ventClock += deltaSeconds;
+                while (h.ventClock >= h.ventStackSeconds && h.stacks > 0)
+                {
+                    h.ventClock -= h.ventStackSeconds;
+                    --h.stacks;
+                }
+
+                if (h.stacks == 0)
+                {
+                    h.venting    = false;
+                    h.ventClock  = 0.0f;
+                    h.overheated = false;
+                }
+                return false;
+            }
+
+            h.venting   = false;
+            h.ventClock = 0.0f;
+        }
+
         if (firing)
         {
             if (!h.firing || unlimited)
@@ -750,6 +894,8 @@ namespace
         float stacks = static_cast<float>(h.stacks);
         if (h.firing)
             stacks += h.riseClock / h.stackSeconds;
+        else if (h.venting)
+            stacks -= h.ventClock / h.ventStackSeconds;
         else if (h.delay <= 0.0f && h.stacks > 0)
             stacks -= h.drainClock / h.stackCoolSeconds;
 
@@ -779,6 +925,32 @@ namespace
             view.scale = 1.0f;
         view.baseColour = PlayerMarkerColour();
         PublishDroneHeat(&view);
+    }
+
+    // ---- the Reload key ---------------------------------------------------------
+
+    // True on the tick the Reload key goes down. The key is looked up again on
+    // each entry to the drone, which picks up a rebind made in the game's
+    // Controls, and on the retry timer while it is not settled; R stands in,
+    // logged once, as the boost key's LeftShift does.
+    bool ReloadPressed(bool inDrone)
+    {
+        if ((inDrone && !g_reloadInDrone) || g_reloadKey.Due())
+        {
+            char keyName[64] = {};
+            const FollowedKey::Result result = g_reloadKey.Resolve(
+                SDK::UCrInputWeaponReload::StaticClass(), inDrone, 'R', keyName, sizeof(keyName));
+            if (result.followed)
+                LOG_INFO("DroneLaser: heat vent on the game's Reload key (%s)", keyName);
+            else if (result.firstFallback)
+                LOG_WARN("DroneLaser: could not resolve the game's Reload key (%s), using R", result.why);
+        }
+        g_reloadInDrone = inDrone;
+
+        const bool down = g_reloadKey.vk != 0 && (GetAsyncKeyState(g_reloadKey.vk) & 0x8000) != 0 && GameHasFocus();
+        const bool pressed = down && !g_reloadDown;
+        g_reloadDown = down;
+        return pressed;
     }
 
     // ---- the tick -------------------------------------------------------------
@@ -814,7 +986,7 @@ namespace
             return;
         }
 
-        if (character->bDead)
+        if (DroneFields::Dead(character))
         {
             StopMining("character dead");
             return;
@@ -845,7 +1017,7 @@ namespace
             return;
         }
 
-        SDK::UCrMiningComponent* comp = character->MiningComponent;
+        SDK::UCrMiningComponent* comp = DroneFields::ValueOr(DroneFields::MiningComponent, character);
         if (!comp)
         {
             StopMining("no mining component");
@@ -869,10 +1041,12 @@ namespace
 
         // The tool's own rate (GetMiningRPM): the hit interval at level 0,
         // divided by the drill's fire rate multiplier.
-        const float damage   = tool->MiningTypeDamage * DamageMultiplier(character);
-        const float interval = SDK::UAbilitySystemBlueprintLibrary::Conv_ScalableFloatToFloat(tool->RoundsPerMinute, 0.0f)
-                             / g_s.drillFireRateMod;
-        const float range    = tool->BaseRange.Value;
+        const auto* rpm       = DroneFields::RoundsPerMinute.In(tool);
+        const auto* baseRange = DroneFields::BaseRange.In(tool);
+        const float damage   = DroneFields::ValueOr(DroneFields::MiningTypeDamage, tool, 0.0f) * DamageMultiplier(character);
+        const float interval = rpm ? SDK::UAbilitySystemBlueprintLibrary::Conv_ScalableFloatToFloat(*rpm, 0.0f)
+                                     / g_s.drillFireRateMod : 0.0f;
+        const float range    = baseRange ? baseRange->Value : 0.0f;
         if (!(damage > 0.0f) || !(interval > 0.0f) || !(range > 0.0f))
         {
             StopMining("mining tool has no damage, rate or range");
@@ -958,16 +1132,11 @@ void ResolveDroneLaser(IPluginSelf* self, IPluginHookScanner* scanner)
 
     auto resolve = [&](const char* name, const char* pattern)
     {
-        PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-        req.hookName = name;
-        req.pattern  = pattern;
-        req.kind     = PLUGIN_SCAN_FUNCTION_START;
-        req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-        return scanner->Resolve(self, &req);
+        return DroneFields::ResolveFunction(self, scanner, name, pattern);
     };
 
-    g_addrMineActor = resolve("UCrMiningComponent::MineResourceRequest(actor)", MiningNatives::kPatMineActor);
-    g_addrMineIsm   = resolve("UCrMiningComponent::MineResourceRequest(ISM)",   MiningNatives::kPatMineIsm);
+    g_addrMineActor = resolve(DroneFields::Keys::MineActor, MiningNatives::kPatMineActor);
+    g_addrMineIsm   = resolve(DroneFields::Keys::MineIsm, MiningNatives::kPatMineIsm);
     g_addrGetAmountCanAdd = resolve("UCrInventoryComponent::GetAmountCanAdd", kPatGetAmountCanAdd);
 }
 
@@ -1005,7 +1174,7 @@ void ShutdownDroneLaser(IPluginSelf* self)
     // render thread. Game objects are only touched from the game thread;
     // anywhere else mining, beam and loops are left as they are (see
     // DroneLaserFx::Shutdown).
-    const bool onGameThread = GetCurrentThreadId() == g_gameThreadId.load(std::memory_order_relaxed);
+    const bool onGameThread = OnGameThread();
     DroneLaserFx::Shutdown(onGameThread);
     ShutdownDroneHeatDisplay(self);
 
@@ -1014,14 +1183,15 @@ void ShutdownDroneLaser(IPluginSelf* self)
     else
         StopMining("plugin shutdown");
 
-    g_s    = LaserState{};
-    g_heat = Heat{};
+    g_s      = LaserState{};
+    g_heat   = Heat{};
+    g_reloadKey      = FollowedKey{};
+    g_reloadDown     = false;
+    g_reloadInDrone  = false;
 }
 
 void TickDroneLaser(float deltaSeconds)
 {
-    g_gameThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
-
     SampleDrillMods(LocalPlayerCharacter());
 
     Frame frame;
@@ -1029,6 +1199,16 @@ void TickDroneLaser(float deltaSeconds)
 
     if (frame.firing && !g_heat.firing)
         ReadHeatNumbers();
+
+    // Reload vents the heat, in the drone with no menu open. The key is
+    // polled every tick, so a key already down is not read as a fresh press
+    // later.
+    const bool inDrone = IsLocalPlayerInDrone();
+    if (ReloadPressed(inDrone) && inDrone && !IsGameMenuOpen() && !frame.firing)
+    {
+        ReadVentNumbers();
+        StartVent(g_heat);
+    }
 
     // Heat runs every tick, in the drone or not, so it cools on foot too.
     const bool unlimited = frame.firing && UnlimitedHeat(frame.character);

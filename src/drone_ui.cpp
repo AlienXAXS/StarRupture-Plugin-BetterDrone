@@ -308,6 +308,19 @@ namespace
     }
 }
 
+float SpeedInPanelUnit(float cmPerSec, char* unit, int unitSize)
+{
+    DroneConfig::Config::ReadSpeedUnit(unit, unitSize);
+    return cmPerSec * kSpeedScale[SelectUnitIndex(unit)].factor;
+}
+
+bool DistanceInFeet()
+{
+    char unit[16] = {};
+    DroneConfig::Config::ReadSpeedUnit(unit, sizeof(unit));
+    return SelectUnitIndex(unit) == kUnitMph;
+}
+
 static void OnToggleKeyPressed(EModKey, EModKeyEvent event)
 {
     if (event == EModKeyEvent::Pressed)
@@ -1133,6 +1146,15 @@ void RenderDronePanel(IModLoaderImGui* ui)
     // render callback caused the close to silently undo itself one frame
     // later. By the time this runs, the loader will simply not have called
     // it at all for a frame where the close already landed.
+    //
+    // Opened from the mod loader's own panel list rather than via
+    // OpenDroneMenu - adopt it so Escape/Q and our state track it too.
+    if (s_self && s_self->hooks && s_self->hooks->UI && !s_menuOpen.exchange(true, std::memory_order_relaxed))
+    {
+        g_closeRequested.store(false, std::memory_order_relaxed);
+        g_inputCaptureToken = s_self->hooks->UI->AcquireInputCapture();
+    }
+
     float avail_x = 0.0f, avail_y = 0.0f;
     ui->GetContentRegionAvail(&avail_x, &avail_y);
 
@@ -1206,6 +1228,12 @@ void RenderDronePanel(IModLoaderImGui* ui)
     ui->SameLine(0.0f, 10.0f);
     if (ui->RadioButton("cm/s (Engine)##unit_cms", unitIdx == kUnitCms))
         DroneConfig::Config::WriteSpeedUnit("cm/s");
+
+    bool speedometer = DroneConfig::Config::ReadSpeedometer();
+    if (ui->Checkbox("Speedometer##hud_speedometer", &speedometer))
+        DroneConfig::Config::WriteSpeedometer(speedometer);
+    if (ui->IsItemHovered())
+        ui->SetTooltip("Shows the drone's speed under the HUD's distance readout, in the unit above. With mph the distance shows in feet.");
 
     ui->Spacing();
 

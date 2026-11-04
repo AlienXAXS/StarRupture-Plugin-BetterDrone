@@ -1,8 +1,10 @@
 #include "drone_wave_patch.h"
 #include "drone_config.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <plugin_interface.h>
 #include <Chimera_classes.hpp>
+#include <windows.h>
 
 // ACrCharacterPlayerBase::CanBuildingDroneBeActive
 // Returns false during EnviroWaveStage_PreWave / Moving / Fadeout, blocking drone use.
@@ -50,36 +52,73 @@ static CheckIfInInterior_t g_originalInterior = nullptr;
 static HookHandle          g_hookInterior     = nullptr;
 static uintptr_t           g_addrInterior     = 0;
 
+// Game thread only. The last state logged, so the line fires on a change
+// rather than every tick.
+static int      g_lastShelterLog = -1;
+static uint64_t g_lastShelterMs  = 0;
+
 static bool BodyOverlaps(SDK::ACrCharacterPlayerBase* character, SDK::UPrimitiveComponent* volume)
 {
     return (character->CapsuleComponent && character->CapsuleComponent->IsOverlappingComponent(volume)) ||
            (character->Mesh && character->Mesh->IsOverlappingComponent(volume));
 }
 
-// Drops the interior volumes that only the drone's sphere touches.
-static void DropDroneOnlyInteriors(SDK::ACrCharacterPlayerBase* character, OverlapList* overlaps)
+// Drops the interior volumes that only the drone's sphere touches. Returns how
+// many it dropped; bodyInterior / bodySafe describe what is left.
+static int DropDroneOnlyInteriors(SDK::ACrCharacterPlayerBase* character, OverlapList* overlaps,
+                                  bool& bodyInterior, bool& bodySafe)
 {
-    SDK::USphereComponent* droneSphere = character->DroneCameraColl;
-    int32_t kept = 0;
+    SDK::USphereComponent* droneSphere = DroneFields::ValueOr(DroneFields::DroneCameraColl, character);
+    int dropped = 0;
+    int kept    = 0;
 
     for (int32_t i = 0; i < overlaps->num; ++i)
     {
         SDK::UPrimitiveComponent* comp = overlaps->data[i];
-        if (comp && droneSphere && comp->IsA(SDK::UInteriorOverlapComponent::StaticClass()) &&
-            droneSphere->IsOverlappingComponent(comp) && !BodyOverlaps(character, comp))
-            continue;
+        if (comp && comp->IsA(SDK::UInteriorOverlapComponent::StaticClass()))
+        {
+            if (droneSphere && droneSphere->IsOverlappingComponent(comp) && !BodyOverlaps(character, comp))
+            {
+                ++dropped;
+                continue;
+            }
+
+            bodyInterior = true;
+            bodySafe     = bodySafe || DroneFields::ValueOr(DroneFields::IsSafeInterior, static_cast<SDK::UInteriorOverlapComponent*>(comp), false);
+        }
 
         overlaps->data[kept++] = comp;
     }
 
     overlaps->num = kept;
+    return dropped;
 }
 
 static void __fastcall Detour_CheckIfInInterior(void* thisPtr, OverlapList* overlaps)
 {
     auto* character = static_cast<SDK::ACrCharacterPlayerBase*>(thisPtr);
-    if (character && overlaps && character->Status == SDK::EPlayerCharacterStatus::BuildingDrone)
-        DropDroneOnlyInteriors(character, overlaps);
+    if (!character || !overlaps || !DroneFields::InDrone(character))
+    {
+        g_lastShelterLog = -1;
+        g_originalInterior(thisPtr, overlaps);
+        return;
+    }
+
+    bool bodyInterior = false;
+    bool bodySafe     = false;
+    const int dropped = DropDroneOnlyInteriors(character, overlaps, bodyInterior, bodySafe);
+
+    // What a wave test needs to see: whether the body counts as sheltered, and
+    // whether the drone was in a shelter the body is not.
+    const int state    = (bodyInterior ? 1 : 0) | (bodySafe ? 2 : 0) | (dropped ? 4 : 0);
+    const uint64_t now = GetTickCount64();
+    if (state != g_lastShelterLog && now - g_lastShelterMs >= 1000)
+    {
+        g_lastShelterLog = state;
+        g_lastShelterMs  = now;
+        LOG_INFO("WaveShelter: drone out, body interior=%d safe=%d, ignored %d shelter volume(s) only the drone touches",
+                 bodyInterior ? 1 : 0, bodySafe ? 1 : 0, dropped);
+    }
 
     g_originalInterior(thisPtr, overlaps);
 }
@@ -103,21 +142,10 @@ void ResolveWavePatch(IPluginSelf* self, IPluginHookScanner* scanner)
     // FUNCTION_START because a detour is written over this address: the loader
     // checks the match is a real function entry with room for the 14-byte jump,
     // rather than taking the pattern's word for it.
-    PluginScanRequest req = PLUGIN_SCAN_REQUEST_INIT;
-    req.hookName = "ACrCharacterPlayerBase::CanBuildingDroneBeActive";
-    req.pattern  = kCanBuildingDroneBeActivePattern;
-    req.kind     = PLUGIN_SCAN_FUNCTION_START;
-    req.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-
-    g_addr = scanner->Resolve(self, &req);
-
-    PluginScanRequest interiorReq = PLUGIN_SCAN_REQUEST_INIT;
-    interiorReq.hookName = "ACrCharacterPlayerBase::CheckIfInInterior";
-    interiorReq.pattern  = kCheckIfInInteriorPattern;
-    interiorReq.kind     = PLUGIN_SCAN_FUNCTION_START;
-    interiorReq.flags    = PLUGIN_SCAN_FLAG_OPTIONAL;
-
-    g_addrInterior = scanner->Resolve(self, &interiorReq);
+    g_addr = DroneFields::ResolveFunction(self, scanner,
+        DroneFields::Keys::CanDroneBeActive, kCanBuildingDroneBeActivePattern);
+    g_addrInterior = DroneFields::ResolveFunction(self, scanner,
+        DroneFields::Keys::CheckIfInInterior, kCheckIfInInteriorPattern);
 }
 
 static void InitShelterHook()
@@ -142,9 +170,13 @@ static void InitShelterHook()
     LOG_INFO("WaveShelter: shelter is judged at the parked body while the drone is out");
 }
 
-bool InitWavePatch()
+bool InitWavePatch(bool allowDrone, bool shelter)
 {
-    InitShelterHook();
+    if (shelter)
+        InitShelterHook();
+
+    if (!allowDrone)
+        return false;
 
     uintptr_t addr = g_addr;
 
@@ -186,6 +218,7 @@ void ShutdownWavePatch()
         GetSelf()->hooks->Hooks->Remove(g_hookInterior);
         g_hookInterior     = nullptr;
         g_originalInterior = nullptr;
+        g_lastShelterLog   = -1;
         LOG_DEBUG("WaveShelter: hook removed");
     }
 }

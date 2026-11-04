@@ -20,7 +20,8 @@ Opens with **F10** (rebindable on the loader's Config page, Controls), the **BET
 
 - **Rows:** Drone Speed, Acceleration, Deceleration, Boost Multiplier, Max Radius, Max Height, Drone Size, and a collapsed Audio section (Master, Idle, Movement, Rotation, Station volume; Master sets the rest). Each has a slider, a number box (typed values clamp to the ranges below) and a reset arrow (default; the game's own value for speed, radius and height).
 - **Drone Size:** the drone's collision radius, 20 to 50 cm (stock 50). A smaller drone fits through ladder holes and gaps. Its weight stays the same, so speed does not change with size. <sup>[✦](#msantoro12)</sup>
-- **Speed Display Unit:** **km/h** (default), **mph** or **cm/s** (1000 cm/s = 36 km/h = 22.4 mph). Sets the speed, acceleration (km/h/s, mph/s, cm/s²) and range (m, ft, cm) rows, and the toast.
+- **Speed Display Unit:** **km/h** (default), **mph** or **cm/s** (1000 cm/s = 36 km/h = 22.4 mph). Sets the speed, acceleration (km/h/s, mph/s, cm/s²) and range (m, ft, cm) rows, the toast, the speedometer, and the HUD's distance and height readouts, which show in feet with **mph** and in metres otherwise.
+- **Speedometer** (on by default): the drone's speed under the HUD's distance readout, its number lined up with the distance digits and its unit under the "m", so it keeps its place as the numbers change, in the readout's own font. While it shows, the HUD's ring stays centred on the crosshair whatever the distance and height read. <sup>[✦](#msantoro12)</sup>
 - **Saved presets:** Save (named for you), Rename, Delete (asks first), for speed and range. Built-in names are reserved. The dropdown and the hotkeys use the first 16 per group, A-Z. Names up to 63 characters.
 
 | Preset | Speed (cm/s) | Boost | Accel / decel (cm/s²) | Max Radius (cm) | Max Height (cm) |
@@ -64,15 +65,22 @@ Hold **G** (rebindable on the loader's Config page, Controls) while flying to mi
 
 <a href="images/laser-heat-ring.png"><img src="images/laser-heat-ring.png" width="480" alt="The mining laser beam on a meteor ore"></a>
 
-- **Stops** on release, a new or lost target, recall, an open menu or death. After a full inventory, press again. After an overheat it stays locked until the heat has drained (about 97 s for the laser).
+- **Stops** on release, a new or lost target, recall, an open menu or death. After a full inventory, press again. After an overheat it stays locked until the heat has drained (about 97 s for the laser) or been vented.
 - **Aim:** a 25 cm sphere catches small ore beside the crosshair. The target holds 0.35 s through a miss.
 - **Heat:** one stack per 0.2 s, overheat at 100. Cooling starts after 8 s (15 s after an overheat), then one stack per 0.82 s.
 - **Heat ring:** around the crosshair, filling clockwise from 12 o'clock in your marker colour, orange by 75%, red by 90%. Dims while cooling holds, shrinks as it drains, pulses from 85%, flashes red while locked out.
+- **Vent:** press the game's Reload key (R unless rebound) in the drone to vent the heat as the mining tool's R does: the vent takes 0.04 s per stack, plus 4 s when overheated (8 s from a full, overheated laser), the stacks coming off evenly, and the overheat ends with the last one. It does nothing with no heat or while firing, and firing stops a vent that is not overheated. The timing is read from the game's forced cooldown ability. The vent is silent.
 - **Drill:** its heat is read, never changed; the unlimited heat tag (BetterCheats' No Handheld Drill Overheat) means no heat. Fire rate follows the drill's bonuses as last seen in hand. BetterCheats' Mining Damage, Range, Hit Rate and Overheat Cooldown rows apply.
 
 ### Floor guard
 
-With the range above stock, flying far out can unload the floor under your parked character. If it falls straight down from its spot (100 cm or more while the drone is out, any fall after return), it is held there until the floor is back, then set down walking. It gives up after 10 s. Walking, jumping or a knockback ends it. No setting.
+With the range above stock, flying far out can unload the floor under your parked character. If it falls straight down from its spot (100 cm or more while the drone is out, any fall after return), it is held there until the floor is back, then set down walking. It gives up after 10 s. Walking ends the hold only after 3 s, so a key held while recalling doesn't drop you; jumping or a knockback after the set-down ends it. No setting.
+
+### Keep area around body loaded <sup>[✦](#msantoro12)</sup>
+
+The game loads the world around the view, and in the drone the view is the drone. Fly far out and the ground around your parked character unloads, so the world is gone when you come back and streams in again. While the drone is out, BetterDrone gives your character one of the game's own streaming sources (the kind teleporters use) with a small round shape, so the area within `Body Area Radius` of your body stays loaded and active. The default is 40 m, the game's own drone range, which the stock drone never unloads. It is removed when the drone comes back, on turning the setting off, on death, world exit and RELOAD.
+
+Cost: memory and some actor ticks for that area, about what standing there costs. It adds no GPU time, since that area is beyond the drone's view. Turn it off with `Keep Area Around Body Loaded` if you would rather not pay for it.
 
 ### Wave shelter <sup>[✦](#msantoro12)</sup>
 
@@ -89,6 +97,8 @@ Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first l
 | Section | Key | Default | Description |
 |---|---|---|---|
 | `[Drone]` | `Always Allow Drone` | `false` | Drone allowed where blocked |
+| `[Drone]` | `Keep Area Around Body Loaded` | `true` | Keeps the ground around your parked character loaded while the drone is out |
+| `[Drone]` | `Body Area Radius` | `40` | Metres kept loaded (20 to 200); 40 is the stock drone range |
 | `[Interaction]` | `Interact In Drone Mode` | `true` | Interact from the drone |
 | `[Interaction]` | `Interact Key` | `E` | Match your game's interact key |
 | `[Interaction]` | `Map In Drone Mode` | `true` | Map from the drone |

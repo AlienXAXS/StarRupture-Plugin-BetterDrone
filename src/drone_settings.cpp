@@ -1,12 +1,14 @@
 #include "drone_settings.h"
 #include "drone_config.h"
 #include "drone_audio.h"
+#include "drone_body_anchor.h"
 #include "drone_floor_guard.h"
 #include "drone_interact.h"
 #include "drone_sprint_key.h"
 #include "drone_key_vk.h"
 #include "plugin_helpers.h"
 #include "object_ref.h"
+#include "drone_fields.h"
 #include <AuActorPlacement_classes.hpp>
 #include <Chimera_classes.hpp>
 #include <BP_FloatingDrone_classes.hpp>
@@ -14,6 +16,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <windows.h>
 
 DroneSettings g_drone;
@@ -38,10 +41,6 @@ namespace
 
     std::atomic<bool> g_lastKnownInDrone{ false };
 
-    // The thread OnDroneTick runs on, so shutdown can tell whether it may
-    // touch the live drone. 0 until the first tick.
-    std::atomic<DWORD> g_gameThreadId{ 0 };
-
     float g_currentEffectiveSpeed = 0.0f;
 
     // Last base speed OnDroneTick observed, so a slider/preset/config change
@@ -59,12 +58,12 @@ namespace
     bool g_inGameSession = false;
 
     bool g_wasInDrone = false;
-    bool g_boostWasActive = false;
-    bool g_loggedInstanceReport = false;
 
     // Drone Size wanted on the live drone, in cm. Set from the pending
     // request on the tick; starts at the stock radius.
     float g_droneSizeCm = 0.0f;
+    bool g_boostWasActive = false;
+    bool g_loggedInstanceReport = false;
 
     void OnBoostKeyPressed(EModKey, EModKeyEvent event)
     {
@@ -81,25 +80,29 @@ namespace
         }
     }
 
+    // The Sprint lookup's state: written on the game thread only (a lookup
+    // reads the world, so it is never made from the init or render thread).
+    // pending: Boost Key follows Sprint and its key is not settled yet.
+    FollowedKey g_sprintKey;
+
     // Resolves the game's current Sprint key and caches its VK for
     // OnDroneTick to poll -- following Sprint registers no keybind with the
-    // loader, so nothing else would dispatch it. Falls back to LeftShift,
-    // logged once, if the Sprint action or its binding cannot be found (no
-    // world yet, gamepad-only, etc.); a later re-resolve picks up the real
-    // key once one is available.
-    void ResolveAndCacheSprintKey()
+    // loader, so nothing else would dispatch it. LeftShift stands in, logged
+    // once, only when Sprint has no keyboard binding, or the lookup still
+    // misses with the player in the drone.
+    void ResolveAndCacheSprintKey(bool inDrone)
     {
         char keyName[64] = {};
-        int vk = ResolveSprintVk(keyName, sizeof(keyName));
-        if (vk == 0)
-        {
-            vk = VK_LSHIFT;
-            snprintf(keyName, sizeof(keyName), "LeftShift");
-            LOG_WARN("ResolveAndCacheSprintKey: could not resolve the game's Sprint key, falling back to LeftShift");
-        }
+        const FollowedKey::Result result = g_sprintKey.Resolve(
+            SDK::UCrInputSprint::StaticClass(), inDrone, VK_LSHIFT, keyName, sizeof(keyName));
+        if (!result.followed && !result.fellBack)
+            return;
 
-        g_boostKeyVk.store(vk, std::memory_order_relaxed);
-        LOG_INFO("boost key: following Sprint (%s)", keyName);
+        g_boostKeyVk.store(g_sprintKey.vk, std::memory_order_relaxed);
+        if (result.followed)
+            LOG_INFO("boost key: following Sprint (%s)", keyName);
+        else if (result.firstFallback)
+            LOG_WARN("boost key: could not resolve the game's Sprint key (%s), using LeftShift", result.why);
     }
 
     // A named combo's Released only fires on an exact modifier match
@@ -119,7 +122,8 @@ namespace
         if (strcmp(keyName, DroneConfig::kBoostKeyFollowsSprint) == 0)
         {
             g_boostFollowsSprint.store(true, std::memory_order_relaxed);
-            ResolveAndCacheSprintKey();
+            g_boostKeyVk.store(0, std::memory_order_relaxed);
+            g_sprintKey.Restart();
             return;
         }
 
@@ -146,13 +150,15 @@ namespace
         // Picks up an in-game rebind of Sprint made while no drone session
         // was active to observe it via the enter-drone edge below.
         if (g_boostFollowsSprint.load(std::memory_order_relaxed))
-            ResolveAndCacheSprintKey();
+            ResolveAndCacheSprintKey(false);
+        g_sprintKey.tries = 0;
     }
 
     void OnWorldEndPlay(SDK::UWorld*, const char* worldName)
     {
         DroneAudio::OnWorldEnd();
         ResetDroneFloorGuard();
+        ResetDroneBodyAnchor();
 
         if (worldName && std::strcmp(worldName, "ChimeraMain") == 0)
             g_inGameSession = false;
@@ -175,7 +181,7 @@ void InitGameSessionTracking(IPluginSelf* self)
 
     try
     {
-        SDK::UWorld* world = SDK::UWorld::GetWorld();
+        SDK::UWorld* world = PluginSdkRuntime::GetWorld();
         if (world && world->GetName() == "ChimeraMain")
             g_inGameSession = true;
     }
@@ -205,17 +211,25 @@ bool InitDroneSettings()
         return false;
     }
 
-    g_drone.speedPerSec   = &cdo->BuildingDroneSpeedPerSec;
-    g_drone.maxRadius     = &cdo->BuildingDroneMaxRadius;
-    g_drone.warningRadius = &cdo->BuildingDroneWarningRadius;
-    g_drone.maxHeight     = &cdo->BuildingDroneMaxHeight;
-    g_drone.warningHeight = &cdo->BuildingDroneWarningHeight;
+    g_drone.speedPerSec   = DroneFields::SpeedPerSec.In(cdo);
+    g_drone.maxRadius     = DroneFields::MaxRadius.In(cdo);
+    g_drone.warningRadius = DroneFields::WarningRadius.In(cdo);
+    g_drone.maxHeight     = DroneFields::MaxHeight.In(cdo);
+    g_drone.warningHeight = DroneFields::WarningHeight.In(cdo);
+    const float* sphereRadius = DroneFields::SphereRadius.In(cdo);
+    if (!g_drone.speedPerSec || !g_drone.maxRadius || !g_drone.warningRadius || !g_drone.maxHeight
+        || !g_drone.warningHeight || !sphereRadius)
+    {
+        LOG_WARN("InitDroneSettings: a drone setting did not resolve on this build");
+        g_drone = DroneSettings{};
+        return false;
+    }
     g_drone.origSpeedPerSec   = *g_drone.speedPerSec;
     g_drone.origMaxRadius     = *g_drone.maxRadius;
     g_drone.origWarningRadius = *g_drone.warningRadius;
     g_drone.origMaxHeight     = *g_drone.maxHeight;
     g_drone.origWarningHeight = *g_drone.warningHeight;
-    g_drone.origSphereRadius  = cdo->BuildingDroneSphereRadius;
+    g_drone.origSphereRadius  = *sphereRadius;
     g_drone.valid             = true;
     g_currentEffectiveSpeed   = *g_drone.speedPerSec;
     g_droneSizeCm             = g_drone.origSphereRadius;
@@ -231,8 +245,8 @@ namespace
     SDK::USphereComponent* LiveDroneSphere()
     {
         SDK::ACrCharacterPlayerBase* character = LocalPlayerCharacter();
-        SDK::ACrCharacterDroneBase* drone = character ? character->BuildingDrone : nullptr;
-        return drone ? drone->SphereComponent : nullptr;
+        SDK::ACrCharacterDroneBase* drone = DroneFields::ValueOr(DroneFields::BuildingDrone, character);
+        return DroneFields::ValueOr(DroneFields::SphereComponent, drone);
     }
 
     // Drone Size, applied to the live drone. Game thread only.
@@ -289,6 +303,14 @@ namespace
         return static_cast<SDK::ABP_FloatingDrone_C*>(owner);
     }
 
+    // The drone's body mesh, or null when the drone is null or the Blueprint
+    // has no such member on this build.
+    SDK::UStaticMeshComponent* DroneMeshOf(SDK::ABP_FloatingDrone_C* drone)
+    {
+        SDK::UStaticMeshComponent** at = DroneFields::DroneMesh.In(DroneFields::ObjectProperties(), drone);
+        return at ? *at : nullptr;
+    }
+
     // Gives the mesh back the collision the game gave it. Setting the
     // collision state renames the profile to Custom, so a named profile is
     // put back by name. A mesh that is gone needs nothing.
@@ -312,7 +334,7 @@ namespace
     void ApplyPlateCollision(SDK::USphereComponent* sphere, float radiusCm)
     {
         SDK::ABP_FloatingDrone_C* drone = FloatingDrone(sphere);
-        SDK::UStaticMeshComponent* mesh = drone ? drone->SM_BuidingDrone : nullptr;
+        SDK::UStaticMeshComponent* mesh = DroneMeshOf(drone);
         const bool shrink = mesh && radiusCm < g_drone.origSphereRadius - 0.01f;
 
         if (!shrink || g_plate.mesh.Get() != mesh)
@@ -398,7 +420,7 @@ void RestoreCDODefaults()
 
     // Shutdown runs on the game thread on loader 1.22 and later; anywhere
     // else, leave the live drone alone.
-    if (GetCurrentThreadId() == g_gameThreadId.load(std::memory_order_relaxed))
+    if (OnGameThread())
     {
         try
         {
@@ -447,7 +469,7 @@ void UpdateActiveDrones()
             continue;
 
         auto* drone = static_cast<SDK::ACrCharacterDroneBase*>(obj);
-        SDK::UAuActorPlacementDeveloperSettings* settings = drone->PlacementDeveloperSettings;
+        SDK::UAuActorPlacementDeveloperSettings* settings = DroneFields::ValueOr(DroneFields::PlacementDeveloperSettings, drone);
         if (!settings)
         {
             LOG_DEBUG("UpdateActiveDrones: drone instance has null PlacementDeveloperSettings, skipping");
@@ -456,18 +478,27 @@ void UpdateActiveDrones()
 
         ++found;
 
+        float* speedAt         = DroneFields::SpeedPerSec.In(settings);
+        float* maxRadiusAt     = DroneFields::MaxRadius.In(settings);
+        float* warningRadiusAt = DroneFields::WarningRadius.In(settings);
+        float* maxHeightAt     = DroneFields::MaxHeight.In(settings);
+        float* warningHeightAt = DroneFields::WarningHeight.In(settings);
+
         // Already written through the CDO.
-        if (&settings->BuildingDroneSpeedPerSec == g_drone.speedPerSec)
+        if (speedAt == g_drone.speedPerSec)
         {
             ++sharedCdo;
             continue;
         }
 
-        settings->BuildingDroneSpeedPerSec      = *g_drone.speedPerSec;
-        settings->BuildingDroneMaxRadius        = *g_drone.maxRadius;
-        settings->BuildingDroneWarningRadius    = *g_drone.warningRadius;
-        settings->BuildingDroneMaxHeight        = *g_drone.maxHeight;
-        settings->BuildingDroneWarningHeight    = *g_drone.warningHeight;
+        if (!speedAt || !maxRadiusAt || !warningRadiusAt || !maxHeightAt || !warningHeightAt)
+            continue;
+
+        *speedAt         = *g_drone.speedPerSec;
+        *maxRadiusAt     = *g_drone.maxRadius;
+        *warningRadiusAt = *g_drone.warningRadius;
+        *maxHeightAt     = *g_drone.maxHeight;
+        *warningHeightAt = *g_drone.warningHeight;
         ++updated;
     }
 
@@ -552,8 +583,6 @@ void OnDroneTick(float deltaSeconds)
     if (!g_drone.valid || !g_drone.speedPerSec)
         return;
 
-    g_gameThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed);
-
     bool needsInstanceUpdate = false;
 
     g_pendingSphere.TakeIfPending(&g_droneSizeCm);
@@ -585,7 +614,11 @@ void OnDroneTick(float deltaSeconds)
 
         // Picks up an in-game rebind of Sprint made mid-session.
         if (g_boostFollowsSprint.load(std::memory_order_relaxed))
-            ResolveAndCacheSprintKey();
+            ResolveAndCacheSprintKey(true);
+    }
+    else if (g_boostFollowsSprint.load(std::memory_order_relaxed) && g_sprintKey.Due())
+    {
+        ResolveAndCacheSprintKey(inDrone);
     }
     // A drone that stays around after the player leaves it goes back to
     // the game's size and mass until the next launch.

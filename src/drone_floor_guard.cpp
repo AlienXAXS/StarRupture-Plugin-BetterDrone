@@ -3,6 +3,7 @@
 #include "drone_settings.h"
 #include "object_ref.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <Chimera_classes.hpp>
 #include <Engine_classes.hpp>
 #include <cmath>
@@ -43,10 +44,6 @@ namespace
     // its floor counts as loaded again.
     constexpr float k_settleSeconds = 3.0f;
 
-    // Input this soon after return is left over from flying the drone, not
-    // the player taking the character back.
-    constexpr float k_returnInputGraceSeconds = 0.5f;
-
     // The stock drone range, used when the game's own values were not read.
     constexpr float k_stockRadiusCm = 5000.0f;
     constexpr float k_stockHeightCm = 2000.0f;
@@ -76,7 +73,6 @@ namespace
     // True once the character has been caught falling, until it is set down.
     bool   g_holding = false;
     float  g_holdSeconds = 0.0f;
-    float  g_returnSeconds = 0.0f;
     float  g_watchSeconds = 0.0f;    // since return or the last set-down
     float  g_settledSeconds = 0.0f;  // floor continuously under the character
     float  g_droneNearSeconds = 0.0f;
@@ -157,7 +153,6 @@ namespace
         g_phase    = Phase::Idle;
         g_holding  = false;
         g_holdSeconds        = 0.0f;
-        g_returnSeconds      = 0.0f;
         g_settledSeconds     = 0.0f;
         g_droneNearSeconds   = 0.0f;
         g_leftStockRange     = false;
@@ -209,7 +204,7 @@ namespace
     // having left, so a floor missing after that is really gone.
     bool TrackDrone(SDK::ACrCharacterPlayerBase* character, float deltaSeconds)
     {
-        SDK::UCameraComponent* camera = character->DroneCamera;
+        SDK::UCameraComponent* camera = DroneFields::ValueOr(DroneFields::DroneCamera, character);
         if (!camera)
             return !g_leftStockRange;
 
@@ -302,8 +297,6 @@ namespace
             return;
         }
 
-        g_returnSeconds += deltaSeconds;
-
         if (!g_holding)
         {
             const SDK::FVector at = character->K2_GetActorLocation();
@@ -334,8 +327,9 @@ namespace
 
             g_holdSeconds = 0.0f;
         }
-        // The player is back in control: moving ends the hold.
-        else if (g_returnSeconds > k_returnInputGraceSeconds &&
+        // The player is back in control: moving ends a hold that has outlasted
+        // the world streaming back in.
+        else if (g_holdSeconds > k_settleSeconds &&
                  !character->GetLastMovementInputVector().IsZero())
         {
             LOG_INFO("DroneFloorGuard: player moved %.1f s into the return hold; released the character",
@@ -370,13 +364,13 @@ void TickDroneFloorGuard(float deltaSeconds)
 {
     SDK::ACrCharacterPlayerBase* character = LocalPlayerCharacter();
     SDK::UCharacterMovementComponent* move = character ? character->CharacterMovement : nullptr;
-    if (!move || character->bDead)
+    if (!move || DroneFields::Dead(character))
     {
         ResetDroneFloorGuard();
         return;
     }
 
-    const bool inDrone = character->Status == SDK::EPlayerCharacterStatus::BuildingDrone;
+    const bool inDrone = DroneFields::InDrone(character);
 
     // A respawned or reloaded character is a different object; whatever was
     // parked no longer applies.
@@ -400,7 +394,6 @@ void TickDroneFloorGuard(float deltaSeconds)
         }
         g_phase = Phase::Returning;
         g_holdSeconds = 0.0f;
-        g_returnSeconds = 0.0f;
         g_settledSeconds = 0.0f;
         g_watchSeconds = 0.0f;
         TickReturning(character, move, deltaSeconds);

@@ -149,6 +149,11 @@ namespace DroneConfig
         constexpr const char* kUnitSection = "UI";
         constexpr const char* kUnitKey     = "SpeedUnit";
 
+        // Panel-file booleans are written as "true"/"false", the loader's own
+        // spelling for its Boolean entries.
+        constexpr const char* kSpeedometerKey = "Speedometer";
+        std::atomic<bool> g_speedometer{ true };
+
         int SpeedUnitIndex(const char* unit)
         {
             for (int i = 0; i < kSpeedUnitCount; ++i)
@@ -376,8 +381,14 @@ namespace DroneConfig
         PanelReadString(kUnitSection, kUnitKey, kSpeedUnits[0], unit, sizeof(unit));
         g_speedUnit.store(SpeedUnitIndex(unit));
 
+        char speedometer[16] = {};
+        PanelReadString(kUnitSection, kSpeedometerKey, "true", speedometer, sizeof(speedometer));
+        g_speedometer.store(_stricmp(speedometer, "false") != 0 && strcmp(speedometer, "0") != 0);
+
         static const ConfigEntry entries[] = {
             { "Drone",       "Always Allow Drone",     ConfigValueType::Boolean, "false",     "Allow the building drone in places it's normally blocked, including wave events.", 0.0f, 1.0f },
+            { "Drone",       "Keep Area Around Body Loaded", ConfigValueType::Boolean, "true", "While the drone is out, keeps the ground around your parked character loaded, so the world is there when you come back. Uses a little memory and some ticks for that area, not GPU time.", 0.0f, 1.0f },
+            { "Drone",       "Body Area Radius",       ConfigValueType::Float,   "40",        "How far around your parked character to keep loaded, in metres. 40 is the stock drone range.", 20.0f, 200.0f },
             { "Interaction", "Interact In Drone Mode", ConfigValueType::Boolean, "true",      "Opens nearby containers and doors from the drone. The camera does not recenter when the prompt appears.", 0.0f, 1.0f },
             { "Interaction", "Interact Key",           ConfigValueType::Keybind, "E",         "Key that triggers interaction while the drone is out, matching the game's own interact key.", 0.0f, 0.0f },
             { "Interaction", "Map In Drone Mode",      ConfigValueType::Boolean, "true",      "Opens the map from the drone.", 0.0f, 1.0f },
@@ -400,6 +411,16 @@ namespace DroneConfig
     bool Config::ReadAlwaysAllowDrone()
     {
         return s_self ? s_self->config->ReadBool(s_self, "Drone", "Always Allow Drone", false) : false;
+    }
+
+    bool Config::ReadKeepBodyLoaded()
+    {
+        return s_self ? s_self->config->ReadBool(s_self, "Drone", "Keep Area Around Body Loaded", true) : false;
+    }
+
+    float Config::ReadBodyAreaRadius()
+    {
+        return s_self ? s_self->config->ReadFloat(s_self, "Drone", "Body Area Radius", 40.0f) : 40.0f;
     }
 
     bool Config::ReadInteractInDroneMode()
@@ -497,6 +518,15 @@ namespace DroneConfig
         std::lock_guard<std::recursive_mutex> lock(g_panelFileMutex);
         g_speedUnit.store(index);
         PanelWriteString(kUnitSection, kUnitKey, kSpeedUnits[index]);
+    }
+
+    bool Config::ReadSpeedometer() { return g_speedometer.load(); }
+
+    void Config::WriteSpeedometer(bool enabled)
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_panelFileMutex);
+        g_speedometer.store(enabled);
+        PanelWriteString(kUnitSection, kSpeedometerKey, enabled ? "true" : "false");
     }
 
     float Config::MaxSpeedPerSec() { return kMaxSpeedPerSec; }

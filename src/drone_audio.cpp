@@ -2,6 +2,7 @@
 #include "drone_config.h"
 #include "object_ref.h"
 #include "plugin_helpers.h"
+#include "drone_fields.h"
 #include <Chimera_classes.hpp>
 #include <atomic>
 #include <cmath>
@@ -99,7 +100,7 @@ namespace DroneAudio
         {
             DropCaches();
 
-            SDK::UWorld* world = SDK::UWorld::GetWorld();
+            SDK::UWorld* world = PluginSdkRuntime::GetWorld();
             if (!world) return;
             g_cachedWorld.Set(world);
 
@@ -115,9 +116,9 @@ namespace DroneAudio
                     if (!drone) continue;
 
                     CachedDrone cached;
-                    cached.idle.Set(drone->IdleSound);
-                    cached.movement.Set(drone->MovementSound);
-                    cached.rotation.Set(drone->RotationSound);
+                    cached.idle.Set(DroneFields::ValueOr(DroneFields::IdleSound, drone));
+                    cached.movement.Set(DroneFields::ValueOr(DroneFields::MovementSound, drone));
+                    cached.rotation.Set(DroneFields::ValueOr(DroneFields::RotationSound, drone));
                     g_cachedDrones.push_back(cached);
                 }
             }
@@ -133,7 +134,10 @@ namespace DroneAudio
                     auto* building = static_cast<SDK::ACrBuildingActorBase*>(actors[i]);
                     if (!building || !NameHasDrone(building)) continue;
 
-                    SDK::TArray<SDK::UAudioComponent*>& sounds = building->StateAudioComponents;
+                    auto* soundsAt = DroneFields::StateAudioComponents.In(building);
+                    if (!soundsAt)
+                        continue;
+                    SDK::TArray<SDK::UAudioComponent*>& sounds = *soundsAt;
                     for (int32_t s = 0; s < sounds.Num(); ++s)
                     {
                         if (sounds[s])
@@ -244,7 +248,7 @@ namespace DroneAudio
 
         // A travel since the last rescan: nothing cached belongs to this
         // world, so rescan now rather than write to the old world's leftovers.
-        if (g_cachedWorld.Get() != SDK::UWorld::GetWorld())
+        if (g_cachedWorld.Get() != PluginSdkRuntime::GetWorld())
             g_rescanTimer = kRescanSeconds;
 
         g_rescanTimer += deltaSeconds;
