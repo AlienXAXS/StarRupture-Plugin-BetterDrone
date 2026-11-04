@@ -8,6 +8,8 @@ jobs:
     runs-on: windows-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      # Global (v3 API) id of the Nexus mod page: GET /v3/games/starrupture/mods/115 -> data.id
+      NEXUS_MOD_ID: '37074157699187'
     permissions:
       contents: write
 
@@ -133,6 +135,7 @@ jobs:
             /v:minimal
 
       - name: Generate release assets
+        id: assets
         shell: pwsh
         run: |
           $tag      = "${{ steps.tag.outputs.TAG }}"
@@ -163,6 +166,11 @@ jobs:
           if (Test-Path $notesFile) {
             $noteLines = @(Get-Content $notesFile | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           }
+
+          # The same lines are the Nexus changelog entry for this version.
+          $changelog = if ($noteLines.Count -gt 0) { $noteLines -join "`n" } else { "See https://github.com/$repo/releases/tag/$tag" }
+          $delim = "EOF_" + [guid]::NewGuid().ToString('N')
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "changelog<<$delim`n$changelog`n$delim"
 
           # Per-plugin update manifest
           $manifest = [ordered]@{
@@ -229,7 +237,7 @@ jobs:
             --generate-notes
 
       - name: Upload Client build to Nexus Mods
-        uses: Nexus-Mods/upload-action@main
+        uses: Nexus-Mods/upload-action@v1.0.0-beta.11
         with:
           api_key: ${{ secrets.NEXUS_APIKEY }}
           file_id: ${{ secrets.NEXUS_CLIENT_GROUP_ID }}
@@ -238,4 +246,23 @@ jobs:
           allow_mod_manager_download: false
           display_name: "BetterDrone Client ${{ steps.tag.outputs.TAG }}"
           description: "Changelog: https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.TAG }}"
+          update_mod_version: true
           version: ${{ steps.tag.outputs.NEXUS_VERSION }}
+          mod_id: ${{ env.NEXUS_MOD_ID }}
+          changelog: ${{ steps.assets.outputs.changelog }}
+
+      # Experimental v3 endpoint: a failure here must not fail the release.
+      - name: Update the Nexus page description
+        if: ${{ hashFiles('nexus/description.bbcode') != '' }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          NEXUS_APIKEY: ${{ secrets.NEXUS_APIKEY }}
+        run: |
+          $bbcode = Get-Content -Raw -Encoding utf8 "$env:GITHUB_WORKSPACE\nexus\description.bbcode"
+          $json = @{ description = $bbcode.Trim() } | ConvertTo-Json -Compress
+          $resp = Invoke-WebRequest -Method Patch -Uri "https://api.nexusmods.com/v3/mods/$env:NEXUS_MOD_ID" `
+            -Headers @{ apikey = $env:NEXUS_APIKEY } -ContentType 'application/json; charset=utf-8' `
+            -Body ([Text.Encoding]::UTF8.GetBytes($json))
+          if ($resp.StatusCode -ne 204) { throw "PATCH returned $($resp.StatusCode), expected 204" }
+          Write-Host "Nexus description replaced (204)."
