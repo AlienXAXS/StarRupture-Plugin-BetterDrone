@@ -260,6 +260,7 @@ jobs:
           NEXUS_APIKEY: ${{ secrets.NEXUS_APIKEY }}
         run: |
           $bbcode = Get-Content -Raw -Encoding utf8 "$env:GITHUB_WORKSPACE\nexus\description.bbcode"
+          $bbcode = $bbcode.Replace('{{TAG}}', '${{ steps.tag.outputs.TAG }}').Replace('{{REPO}}', '${{ github.repository }}')
           $json = @{ description = $bbcode.Trim() } | ConvertTo-Json -Compress
           $resp = Invoke-WebRequest -Method Patch -Uri "https://api.nexusmods.com/v3/mods/$env:NEXUS_MOD_ID" `
             -Headers @{ apikey = $env:NEXUS_APIKEY } -ContentType 'application/json; charset=utf-8' `
