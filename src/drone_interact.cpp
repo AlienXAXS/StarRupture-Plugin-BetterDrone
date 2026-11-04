@@ -487,10 +487,24 @@ namespace
     // back up.
     std::atomic<bool> g_menuWasOpen{ false };
 
+    // The game's UI state as the loader last reported it. The loader sets the
+    // menu bits when a widget lands on the menu layer and clears them when the
+    // widget is fully gone, close animation included, which is the whole time
+    // a menu counts as open here. The callback runs on the game thread, the
+    // loader's tick runs before this plugin's, and any thread may read it.
+    constexpr uint64_t kMenuStateMask = PLUGIN_UI_ANY_MENU | PLUGIN_UI_MAP;
+    std::atomic<uint64_t> g_uiState{ 0 };
+
+    void OnUIState(uint64_t, uint64_t newState, void*)
+    {
+        g_uiState.store(newState, std::memory_order_relaxed);
+    }
+
     // The layer UCrUIManagerSubsystem opens the map, the inventory and
     // every building window on, and the one it opens the death screen on.
     // The HUD layout pushes its escape menu there too. The HUD itself sits
     // on another layer, so an empty stack here means no menu is up.
+    // Walked only to get at a widget that is about to be acted on.
     constexpr const char* kMenuLayerTag = "UI.Layer.Menu";
 
     // The local player's menu layer, or null. Valid for the current tick only.
@@ -558,10 +572,9 @@ namespace
         const bool inDrone = PilotingCharacter(pc) != nullptr;
 
         // The map handler never checks what is already on screen, so it
-        // would push the map on top of any other menu. A widget stays on
-        // the stack's WidgetList until it has finished closing.
-        SDK::UCommonActivatableWidgetContainerBase* layer = inDrone ? FindMenuLayer(pc) : nullptr;
-        const bool open    = layer && layer->WidgetList.Num() > 0;
+        // would push the map on top of any other menu. A menu counts as open
+        // until it has finished closing.
+        const bool open    = inDrone && IsGameMenuOpen();
         const bool wasOpen = g_menuWasOpen.exchange(open);
 
         // Read only on a press, never per tick: it is an INI read.
@@ -575,7 +588,8 @@ namespace
             // close button and back action do: both end in
             // UCrUIManagerSubsystem::CloseMainWidgetByClass, which also puts
             // the input config back to the game. Any other menu is left alone.
-            if (SDK::UCrUW_MapMenu* map = ActiveMap(layer))
+            SDK::UCommonActivatableWidgetContainerBase* layer = FindMenuLayer(pc);
+            if (SDK::UCrUW_MapMenu* map = layer ? ActiveMap(layer) : nullptr)
                 map->HandleOnExitClicked();
             return;
         }
@@ -856,6 +870,10 @@ SDK::ACrPlayerControllerBase* LocalPlayerController()
 
 SDK::UCrUW_MapMenu* ActiveLocalMap()
 {
+    // No map on the menu layer, no walk of it.
+    if (!(g_uiState.load(std::memory_order_relaxed) & PLUGIN_UI_MAP))
+        return nullptr;
+
     SDK::ACrPlayerControllerBase* pc = LocalController();
     SDK::UCommonActivatableWidgetContainerBase* layer = pc ? FindMenuLayer(pc) : nullptr;
     return layer ? ActiveMap(layer) : nullptr;
@@ -875,16 +893,26 @@ bool IsLocalPlayerInDrone()
 
 bool IsGameMenuOpen()
 {
-    try
+    return (g_uiState.load(std::memory_order_relaxed) & PLUGIN_UI_ANY_MENU) != 0;
+}
+
+void InitDroneMenuState(IPluginSelf* self)
+{
+    if (!self->hooks->GameMenu)
     {
-        SDK::ACrPlayerControllerBase* pc = LocalController();
-        SDK::UCommonActivatableWidgetContainerBase* layer = pc ? FindMenuLayer(pc) : nullptr;
-        return layer && layer->WidgetList.Num() > 0;
+        LOG_WARN("DroneMenuState: no game menu table — menus will read as closed");
+        return;
     }
-    catch (...)
-    {
-        return false;
-    }
+
+    self->hooks->GameMenu->RegisterOnUIStateChanged(kMenuStateMask, &OnUIState, nullptr);
+}
+
+void ShutdownDroneMenuState(IPluginSelf* self)
+{
+    if (self->hooks->GameMenu)
+        self->hooks->GameMenu->UnregisterOnUIStateChanged(&OnUIState, nullptr);
+
+    g_uiState.store(0, std::memory_order_relaxed);
 }
 
 void ShutdownDroneInteract()

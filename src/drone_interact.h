@@ -100,6 +100,13 @@ SDK::ACrPlayerControllerBase* LocalPlayerController();
 // current tick only.
 SDK::UCrUW_MapMenu* ActiveLocalMap();
 
-// Game thread only. True while anything is on the game's menu layer: the map,
-// the inventory, a building window, the pause menu.
+// True while anything is on the game's menu layer: the map, the inventory, a
+// building window, the pause menu. A menu that is closing still counts, until
+// its close animation has ended. Any thread; as of the loader's last tick.
 bool IsGameMenuOpen();
+
+// Subscribe to, and drop, the loader's UI state that IsGameMenuOpen reads.
+// Init in PluginInit before any tick that asks; Shutdown in PluginShutdown,
+// from any thread.
+void InitDroneMenuState(IPluginSelf* self);
+void ShutdownDroneMenuState(IPluginSelf* self);

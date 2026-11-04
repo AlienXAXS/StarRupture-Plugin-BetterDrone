@@ -181,6 +181,7 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     LOG_DEBUG("PluginInit: registering hooks");
 
     DroneConfig::Config::Initialize(self);
+    InitDroneMenuState(self);
     SetDroneBodyAnchorEnabled(DroneConfig::Config::ReadKeepBodyLoaded());
     SetDroneBodyAnchorRadiusMeters(DroneConfig::Config::ReadBodyAreaRadius());
     if (DroneFields::Features::Audio.On())
@@ -247,6 +248,8 @@ extern "C" __declspec(dllexport) void PluginShutdown()
     ShutdownDronePresetKeys(g_self);
     ShutdownDroneUI(g_self);
     ShutdownGameSessionTracking(g_self);
+    if (g_self)
+        ShutdownDroneMenuState(g_self);
     RestoreCDODefaults();
 
     if (g_self)
