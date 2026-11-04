@@ -142,6 +142,8 @@ Saved presets are in `Plugins\config\BetterDrone-Presets.ini`: `[Speed:<name>]` 
 
 ## Troubleshooting
 
+Found a bug? [Report it on GitHub](https://github.com/AlienXAXS/StarRupture-Plugin-BetterDrone/issues) and attach your `ModLoader.log` (in `<game>\StarRupture\Binaries\Win64\ModLoader\Logs\`).
+
 | Problem | Solution |
 |---|---|
 | Values not changing | Check `ModLoader.log` in `Binaries\Win64\ModLoader\Logs\` for errors. |
