@@ -59,6 +59,16 @@ namespace DroneFields
 		"ACrPlayerControllerBase", "PlayerControlState", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0xE88 } };
 	inline auto BuildingMenuPlayer = DRONE_FIELD(UCrUW_BuildingMenu, Player);
 
+	// A scene component's world transform. ComponentToWorld is an engine member
+	// the generated SDK does not name, and an FTransform keeps its translation
+	// in a SIMD register, so the translation is a native row of its own at the
+	// FVector size this plugin reads. Both are rows of the loader's map for the
+	// running build; a build with neither turns off the feature using them.
+	inline auto ComponentToWorld = PluginField<SDK::FTransform>{ { "USceneComponent::ComponentToWorld",
+		"USceneComponent", "ComponentToWorld", PLUGIN_FIELD_NATIVE, sizeof(SDK::FTransform), 0x1F0 } };
+	inline auto TransformTranslation = PluginField<SDK::FVector>{ { "FTransform::Translation",
+		"FTransform", "Translation", PLUGIN_FIELD_NATIVE, sizeof(SDK::FVector), 0x20 } };
+
 	// Drone settings and the map's fog of war
 	inline auto SpeedPerSec   = DRONE_FIELD(UAuActorPlacementDeveloperSettings, BuildingDroneSpeedPerSec);
 	inline auto MaxRadius     = DRONE_FIELD(UAuActorPlacementDeveloperSettings, BuildingDroneMaxRadius);
@@ -168,7 +178,7 @@ namespace DroneFields
 			BuildingDrone, Status, DroneCamera, DroneCameraColl, IsDead, GemAttributes, MiningComponent,
 			WeaponSystem, WeaponAttributes, AbilitySystem,
 			DroneOwnCamera, SphereComponent, PlacementDeveloperSettings, IdleSound, MovementSound, RotationSound, StateAudioComponents,
-			CrChar, CurrentInteractableActor, PlayerControlState, BuildingMenuPlayer,
+			CrChar, CurrentInteractableActor, PlayerControlState, BuildingMenuPlayer, ComponentToWorld, TransformTranslation,
 			SpeedPerSec, MaxRadius, WarningRadius, MaxHeight, WarningHeight, SphereRadius,
 			FogUncoverRadius, MinFootstepDistance, FogRadiusMultiplier,
 			IsSafeInterior, NativeInputActions, NativeInputAction, NativeInputHandler,
@@ -253,7 +263,7 @@ namespace DroneFields
 
 		inline PluginMap::Feature Interaction{ "drone-interact", "Open containers and doors from the drone",
 			PluginMap::KeysOf(Keys::TargetsChanged, Keys::InteractStarted, Keys::InteractCompleted, Keys::Interact,
-				CurrentInteractableActor, PlayerControlState, DroneCamera),
+				CurrentInteractableActor, PlayerControlState, DroneCamera, ComponentToWorld, TransformTranslation),
 			{ "Interaction.Interact In Drone Mode", "Interaction.Interact Key" } };
 
 		inline PluginMap::Feature MapOpen{ "drone-map", "Open the map from the drone",

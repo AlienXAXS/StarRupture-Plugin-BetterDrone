@@ -6,3 +6,4 @@
 - Boost follows your Sprint key as soon as the game has it
 - Reload in the drone vents the mining laser's heat, like the mining tool's R
 - New option Keep Area Around Body Loaded: the world around your parked character stays loaded while the drone is out (on by default)
+- The drone's game functions and its one engine offset are now looked up in the mod loader's version map, so a game update can be covered without a new BetterDrone
