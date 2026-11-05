@@ -15,12 +15,6 @@
 
 namespace
 {
-    // USceneComponent::ComponentToWorld.Translation. ComponentToWorld is not a
-    // UProperty so the generated SDK has no name for it; 0x210 is the offset
-    // OnInteractableTargetsChanged itself reads when it measures the range
-    // between the character and a candidate interactable.
-    constexpr size_t k_componentToWorldTranslation = 0x210;
-
     // ACrPlayerControllerBase::PlayerControlState (DroneFields). Not a UProperty,
     // so the generated SDK leaves it in padding; OnInteractableTargetsChanged
     // reads it at 0x1475FB0AA and gates on it twice, at 0x1475FB0B9
@@ -147,19 +141,43 @@ namespace
         return false;
     }
 
+    // A scene component's cached world translation (X, Y, Z), or null when the
+    // map has no row for this build.
+    double* WorldTranslation(SDK::USceneComponent* component)
+    {
+        SDK::FTransform* toWorld = DroneFields::ComponentToWorld.In(component);
+        return reinterpret_cast<double*>(DroneFields::TransformTranslation.In(toWorld));
+    }
+
+    const double* WorldTranslation(const SDK::USceneComponent* component)
+    {
+        const SDK::FTransform* toWorld = DroneFields::ComponentToWorld.In(component);
+        return reinterpret_cast<const double*>(DroneFields::TransformTranslation.In(toWorld));
+    }
+
     // Stands the character's root component at the drone's camera for as long
     // as it is in scope, then puts it back. Only the cached world translation
     // is rewritten, and it is restored before the scope ends, so only the
     // native calls made inside the scope see the move.
+    //
+    // USceneComponent::ComponentToWorld.Translation is not a UProperty, so the
+    // generated SDK has no name for it: it comes from the loader's map
+    // (DroneFields::ComponentToWorld and TransformTranslation), the same place
+    // OnInteractableTargetsChanged reads it from when it measures the range
+    // between the character and a candidate interactable. A build the map does
+    // not cover leaves the drone interaction off, so nothing is moved.
     class BodyAtDroneCamera
     {
     public:
         BodyAtDroneCamera(SDK::USceneComponent* root, const SDK::UCameraComponent* droneCam)
-            : m_translation(reinterpret_cast<double*>(
-                  reinterpret_cast<uint8_t*>(root) + k_componentToWorldTranslation))
+            : m_translation(WorldTranslation(root))
         {
-            const auto* camTranslation = reinterpret_cast<const double*>(
-                reinterpret_cast<const uint8_t*>(droneCam) + k_componentToWorldTranslation);
+            const double* camTranslation = WorldTranslation(droneCam);
+            if (!m_translation || !camTranslation)
+            {
+                m_translation = nullptr;
+                return;
+            }
 
             for (int i = 0; i < 3; ++i)
             {
@@ -170,6 +188,9 @@ namespace
 
         ~BodyAtDroneCamera()
         {
+            if (!m_translation)
+                return;
+
             for (int i = 0; i < 3; ++i)
                 m_translation[i] = m_saved[i];
         }
