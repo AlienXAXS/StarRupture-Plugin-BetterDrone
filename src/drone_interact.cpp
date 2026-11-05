@@ -20,10 +20,41 @@ namespace
     // reads it at 0x1475FB0AA and gates on it twice, at 0x1475FB0B9
     // (== Interacting) and 0x1475FB155 (== Deconstruct).
 
-    // ECrPlayerControlState values, from the game's own UEnum. Only the two the
-    // drone path has to reconcile are named here.
-    constexpr uint8_t k_controlStateNormal          = 0;
-    constexpr uint8_t k_controlStateDeconstructMode = 2;
+    // ECrPlayerControlState values, read by name from the game's own UEnum: the
+    // numbers can move in an update, the names are what the game saves. Only the
+    // two the drone path has to reconcile are looked up.
+    uint8_t g_controlStateNormal          = 0;
+    uint8_t g_controlStateDeconstructMode = 0;
+
+    // Looked up once, on the game thread, the first time the drone path needs
+    // them. False when the enum or an entry is not on this build: the drone
+    // interaction is then left off.
+    bool ControlStatesResolved()
+    {
+        static bool tried    = false;
+        static bool resolved = false;
+        if (tried)
+            return resolved;
+
+        tried = true;
+        int64_t normal = 0, deconstruct = 0;
+        const PluginMap::EnumLookup n = PluginMap::EnumValue("ECrPlayerControlState", "Normal", normal);
+        const PluginMap::EnumLookup d = PluginMap::EnumValue("ECrPlayerControlState", "DeconstructMode", deconstruct);
+        if (n != PluginMap::EnumLookup::Found || d != PluginMap::EnumLookup::Found
+            || normal < 0 || normal > UINT8_MAX || deconstruct < 0 || deconstruct > UINT8_MAX)
+        {
+            LOG_WARN("DroneInteract: ECrPlayerControlState Normal/DeconstructMode not found on this build "
+                     "-- building interaction in drone mode is off");
+            return false;
+        }
+
+        g_controlStateNormal          = static_cast<uint8_t>(normal);
+        g_controlStateDeconstructMode = static_cast<uint8_t>(deconstruct);
+        resolved                      = true;
+        LOG_INFO("DroneInteract: ECrPlayerControlState Normal=%d DeconstructMode=%d",
+                 static_cast<int>(normal), static_cast<int>(deconstruct));
+        return true;
+    }
 
     // Both the game's own interact mapping (if this build still binds it while
     // the drone is out) and our synthetic press land on the same native
@@ -234,7 +265,7 @@ namespace
         // player out of delete mode.
         uint8_t* controlState = DroneFields::PlayerControlState.In(pc);
         auto*    statusAt     = DroneFields::Status.In(character);
-        if (!controlState || !statusAt)
+        if (!controlState || !statusAt || !ControlStatesResolved())
         {
             g_origTargetsChanged(pc, newTargets);
             return;
@@ -248,8 +279,8 @@ namespace
         const SDK::EPlayerCharacterStatus savedStatus = *statusAt;
         *statusAt = SDK::EPlayerCharacterStatus::None;
 
-        if (savedControlState == k_controlStateDeconstructMode)
-            *controlState = k_controlStateNormal;
+        if (savedControlState == g_controlStateDeconstructMode)
+            *controlState = g_controlStateNormal;
 
         {
             const BodyAtDroneCamera atDrone(root, droneCam);
