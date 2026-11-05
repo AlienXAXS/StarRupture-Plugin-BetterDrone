@@ -147,11 +147,16 @@ namespace DroneFields
 	inline auto HudHeightU   = DRONE_FIELD(UCrUW_BuildingDroneHud, HeightValueU);
 	inline auto HudHeightM   = DRONE_FIELD(UCrUW_BuildingDroneHud, HeightValueM);
 
-	// Structs stepped through as array or map elements
-	inline auto NativeInputActionSize = SR_SIZE_CHECK(FCrNativeInputAction);
-	inline auto InventorySlotSize     = SR_SIZE_CHECK(FCrInventorySlot);
-	inline auto WeakSpotSize          = SR_SIZE_CHECK(FCrWeakSpotRuntimeData);
-	inline auto MarkerItemSize        = SR_SIZE_CHECK(FBuildingMarkerDataFastArrayItem);
+	// Structs stepped through as array elements: the size the running game
+	// reflects, read with PluginMap::ElementAt, so a build that resizes one does
+	// not turn the plugin off.
+	inline auto NativeInputActionSize = SR_SIZE(FCrNativeInputAction);
+	inline auto InventorySlotSize     = SR_SIZE(FCrInventorySlot);
+	inline auto WeakSpotSize          = SR_SIZE(FCrWeakSpotRuntimeData);
+	inline auto MarkerItemSize        = SR_SIZE(FBuildingMarkerDataFastArrayItem);
+
+	// Structs held as map values: the pair layout is compiled into the code, so
+	// the size is checked against it.
 	inline auto MarkerRepresentationSize = SR_SIZE_CHECK(FEntityMarkerUIRepresentation);
 	inline auto VeinDataSize          = SR_SIZE_CHECK(FCrInfiniteOreData);
 

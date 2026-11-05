@@ -7,3 +7,4 @@
 - Reload in the drone vents the mining laser's heat, like the mining tool's R
 - New option Keep Area Around Body Loaded: the world around your parked character stays loaded while the drone is out (on by default)
 - The drone's game functions and its one engine offset are now looked up in the mod loader's version map, so a game update can be covered without a new BetterDrone
+- The drone steps through game arrays by the size the running game reports, and reads the player's control states by name, so a game update that resizes or renumbers them does not break it
