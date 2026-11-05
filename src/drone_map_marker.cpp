@@ -204,9 +204,9 @@ namespace
 
                     for (int32_t d = 0; d < dataNum; ++d)
                     {
-                        const SDK::FBuildingMarkerDataFastArrayItem& b = data[d];
-                        const auto* bHandle  = DroneFields::MarkerBuildingHandle.In(&b);
-                        const auto* location = DroneFields::MarkerLocation.In(&b);
+                        const uint8_t* b = PluginMap::ElementAt(data, d, DroneFields::MarkerItemSize);
+                        const auto* bHandle  = DroneFields::MarkerBuildingHandle.In(b);
+                        const auto* location = DroneFields::MarkerLocation.In(b);
                         auto*       marker   = DroneFields::MarkerWidget.In(&widgets[i].Value());
                         if (!bHandle || !location || !marker)
                             continue;

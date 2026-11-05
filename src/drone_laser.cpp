@@ -498,7 +498,8 @@ namespace
         int64_t emptySlots = 0;
         for (int32_t i = 0; i < slots->Num(); ++i)
         {
-            const auto* itemId = DroneFields::SlotItemId.In(&(*slots)[i]);
+            const uint8_t* slot = PluginMap::ElementAt(*slots, i, DroneFields::InventorySlotSize);
+            const auto* itemId = DroneFields::SlotItemId.In(slot);
             const SDK::FGuid* id = itemId ? DroneFields::ItemIdHandle.In(itemId) : nullptr;
             if (id && (id->A | id->B | id->C | id->D) == 0)
                 ++emptySlots;
@@ -550,10 +551,13 @@ namespace
         const int64_t initMax = DroneFields::ValueOr(DroneFields::OreInitMaxCount, oreActor, 0);
         for (int32_t i = 0; i < spots.Num(); ++i)
         {
-            const SDK::FCrWeakSpotRuntimeData& spot = spots[i];
-            const int64_t held = DroneFields::ValueOr(DroneFields::WeakSpotHealth, &spot, 0.0f) > 0.0f
-                ? DroneFields::ValueOr(DroneFields::WeakSpotCount, &spot, 0) : 0;
-            AddGrant(grants, DroneFields::ValueOr(DroneFields::WeakSpotResource, &spot), held + initMax);
+            const uint8_t* spot = PluginMap::ElementAt(spots, i, DroneFields::WeakSpotSize);
+            if (!spot)
+                continue;
+
+            const int64_t held = DroneFields::ValueOr(DroneFields::WeakSpotHealth, spot, 0.0f) > 0.0f
+                ? DroneFields::ValueOr(DroneFields::WeakSpotCount, spot, 0) : 0;
+            AddGrant(grants, DroneFields::ValueOr(DroneFields::WeakSpotResource, spot), held + initMax);
         }
         return grants;
     }

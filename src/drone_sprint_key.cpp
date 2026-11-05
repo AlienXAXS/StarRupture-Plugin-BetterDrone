@@ -46,9 +46,9 @@ namespace
             const int32_t entryCount = actions->Num();
             for (int32_t j = 0; j < entryCount; ++j)
             {
-                const SDK::FCrNativeInputAction& entry = (*actions)[j];
-                SDK::UInputAction*         inputAction = DroneFields::ValueOr(DroneFields::NativeInputAction, &entry);
-                SDK::UCrNativeInputHandler* handler    = DroneFields::ValueOr(DroneFields::NativeInputHandler, &entry);
+                const uint8_t* entry = PluginMap::ElementAt(*actions, j, DroneFields::NativeInputActionSize);
+                SDK::UInputAction*         inputAction = DroneFields::ValueOr(DroneFields::NativeInputAction, entry);
+                SDK::UCrNativeInputHandler* handler    = DroneFields::ValueOr(DroneFields::NativeInputHandler, entry);
                 if (inputAction && handler && handler->IsA(handlerClass))
                     return inputAction;
             }
