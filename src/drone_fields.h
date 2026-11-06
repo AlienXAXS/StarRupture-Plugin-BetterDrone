@@ -65,7 +65,7 @@ namespace DroneFields
 	// FVector size this plugin reads. Both are rows of the loader's map for the
 	// running build; a build with neither turns off the feature using them.
 	// ComponentToWorld also carries this plugin's own rows below, because not
-	// every loader this plugin runs on holds one for the test branch's build.
+	// every loader this plugin runs on holds one for the newest game build.
 	inline auto ComponentToWorld = PluginField<SDK::FTransform>{ { "USceneComponent::ComponentToWorld",
 		"USceneComponent", "ComponentToWorld", PLUGIN_FIELD_NATIVE, sizeof(SDK::FTransform), 0x1F0 } };
 	inline auto TransformTranslation = PluginField<SDK::FVector>{ { "FTransform::Translation",
