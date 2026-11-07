@@ -22,8 +22,18 @@
 // stepped through (an array's elements, a map's pairs) are covered by a size
 // check instead of a field per member. Engine members (AActor, ACharacter,
 // UWidget, FHitResult, ...) stay compiled in.
+//
+// A member that is itself a game struct, or a map of them, is requested at any
+// size (DRONE_FIELD_ANY_SIZE): the plugin reads it only through the member
+// rows of that struct, so a build that resizes it does not turn the plugin off.
 
 #define DRONE_FIELD(Class, Member) SR_FIELD(decltype(SDK::Class::Member), Class, Member, 0)
+
+// SR_FIELD without the size check: the same typed In(object), but the member
+// may be any size the game reflects (see SR_FIELD_ANY_SIZE).
+#define DRONE_FIELD_ANY_SIZE(Class, Member) \
+	PluginField<decltype(SDK::Class::Member)>{ { #Class "::" #Member, #Class, #Member, PLUGIN_FIELD_ANY_SIZE, 0, \
+	                                             static_cast<int32_t>(offsetof(SDK::Class, Member)) } }
 
 namespace DroneFields
 {
@@ -100,22 +110,22 @@ namespace DroneFields
 	inline auto HarvesterMiningDamage = DRONE_FIELD(UCrGemAttributeSet, HarvesterMiningDamageMultiplier);
 	inline auto FireRateMod           = DRONE_FIELD(UCrWeaponAttributeSet, FireRateModMultiplier);
 	inline auto LastEquippedUnarmed   = DRONE_FIELD(UCrWeaponComponent, LastEquippedUnarmed);
-	inline auto EquippedWeapon        = DRONE_FIELD(UAuWeaponComponent, EquippedWeapon);
+	inline auto EquippedWeapon        = DRONE_FIELD_ANY_SIZE(UAuWeaponComponent, EquippedWeapon);
 	inline auto EquippedItemData      = DRONE_FIELD(FAuEquippedWeapon, ItemDataLoaded);
 	inline auto MiningTypeDamage      = DRONE_FIELD(UCrWeaponItemDataBase, MiningTypeDamage);
 	inline auto RoundsPerMinute       = DRONE_FIELD(UAuWeaponItemDataBase, RoundsPerMinute);
 	inline auto BaseRange             = DRONE_FIELD(UAuWeaponItemDataBase, BaseRange);
 	inline auto MaxStack              = DRONE_FIELD(UAuItemDataBase, MaxStack);
-	inline auto CurrentlyMinedOre     = DRONE_FIELD(UCrMiningComponent, CurrentlyMinedOre);
+	inline auto CurrentlyMinedOre     = DRONE_FIELD_ANY_SIZE(UCrMiningComponent, CurrentlyMinedOre);
 	inline auto MinedOreActor         = DRONE_FIELD(FCrOreMiningState, OreActor);
 	inline auto MinedVeinMaterial     = DRONE_FIELD(FCrOreMiningState, InfiniteOrePhysicalMaterial);
-	inline auto MinedVeinData         = DRONE_FIELD(FCrOreMiningState, InfiniteOreData);
+	inline auto MinedVeinData         = DRONE_FIELD_ANY_SIZE(FCrOreMiningState, InfiniteOreData);
 	inline auto VeinResource          = DRONE_FIELD(FCrInfiniteOreData, Resource);
 	inline auto VeinGrantCount        = DRONE_FIELD(FCrInfiniteOreData, GrantingMomentResourceCount);
-	inline auto OreData               = DRONE_FIELD(ACrOreActor, OreData);
+	inline auto OreData               = DRONE_FIELD_ANY_SIZE(ACrOreActor, OreData);
 	inline auto OreResource           = DRONE_FIELD(ACrOreActor, Resource);
 	inline auto OreInitMaxCount       = DRONE_FIELD(ACrOreActor, InitMaxCount);
-	inline auto OreWeakSpots          = DRONE_FIELD(ACrOreActor, WeakSpotsDataContainer);
+	inline auto OreWeakSpots          = DRONE_FIELD_ANY_SIZE(ACrOreActor, WeakSpotsDataContainer);
 	inline auto OreIsDepleted         = DRONE_FIELD(FCrOreRuntimeData, bIsDepleted);
 	inline auto OreCurrentCount       = DRONE_FIELD(FCrOreRuntimeData, CurrentResourceCount);
 	inline auto OreMaxCount           = DRONE_FIELD(FCrOreRuntimeData, MaxResourceCount);
@@ -124,19 +134,19 @@ namespace DroneFields
 	inline auto WeakSpotCount         = DRONE_FIELD(FCrWeakSpotRuntimeData, ResourceCount);
 	inline auto WeakSpotResource      = DRONE_FIELD(FCrWeakSpotRuntimeData, Resource);
 	inline auto InventorySlots        = DRONE_FIELD(UCrInventoryComponent, Slots);
-	inline auto SlotItemId            = DRONE_FIELD(FCrInventorySlot, ItemId);
+	inline auto SlotItemId            = DRONE_FIELD_ANY_SIZE(FCrInventorySlot, ItemId);
 	inline auto ItemIdHandle          = DRONE_FIELD(FAuItemId, Handle);
 	inline auto OreMappingData        = DRONE_FIELD(UCrOreSubsystem, InfiniteOrePhysMatMappingData);
-	inline auto PhysMatOreDataMap     = DRONE_FIELD(UCrInfiniteOrePhysMatData, PhysMatOreDataMap);
+	inline auto PhysMatOreDataMap     = DRONE_FIELD_ANY_SIZE(UCrInfiniteOrePhysMatData, PhysMatOreDataMap);
 
 	// The map marker
 	inline auto MapDataHelper      = DRONE_FIELD(ACrGameStateBase, MapMenuDataReplicationHelper);
-	inline auto BuildingsMarkers   = DRONE_FIELD(ACrMapMenuDataReplicationHelper, BuildingsMarkerDataContainer);
+	inline auto BuildingsMarkers   = DRONE_FIELD_ANY_SIZE(ACrMapMenuDataReplicationHelper, BuildingsMarkerDataContainer);
 	inline auto BuildingsMarkerData = DRONE_FIELD(FBuildingsMarkerDataContainer, BuildingsMarkerData);
 	inline auto MarkerBuildingHandle = DRONE_FIELD(FBuildingMarkerDataFastArrayItem, BuildingHandle);
 	inline auto MarkerLocation     = DRONE_FIELD(FBuildingMarkerDataFastArrayItem, Location);
 	inline auto MapMenuMapArea     = DRONE_FIELD(UCrUW_MapMenu, MapMenuMapArea);
-	inline auto MapMassMarkers     = DRONE_FIELD(UCrUW_MapMenuMapArea, MapMenuMassMarkers);
+	inline auto MapMassMarkers     = DRONE_FIELD_ANY_SIZE(UCrUW_MapMenuMapArea, MapMenuMassMarkers);
 	inline auto MapTerrain         = DRONE_FIELD(UCrUW_MapMenuMapArea, MapMenuTerrain);
 	inline auto MapCanvasPanel     = DRONE_FIELD(UCrUW_MapMenuMapArea, CanvasPanelMapArea);
 	inline auto MarkerWidget       = DRONE_FIELD(FEntityMarkerUIRepresentation, Marker);
@@ -165,10 +175,10 @@ namespace DroneFields
 	inline auto WeakSpotSize          = SR_SIZE(FCrWeakSpotRuntimeData);
 	inline auto MarkerItemSize        = SR_SIZE(FBuildingMarkerDataFastArrayItem);
 
-	// Structs held as map values: the pair layout is compiled into the code, so
-	// the size is checked against it.
-	inline auto MarkerRepresentationSize = SR_SIZE_CHECK(FEntityMarkerUIRepresentation);
-	inline auto VeinDataSize          = SR_SIZE_CHECK(FCrInfiniteOreData);
+	// Structs held as map values: the maps are walked with PluginMap::ScriptMapView
+	// at a stride computed from the size the running game reflects.
+	inline auto MarkerRepresentationSize = SR_SIZE(FEntityMarkerUIRepresentation);
+	inline auto VeinDataSize          = SR_SIZE(FCrInfiniteOreData);
 
 	// Blueprint (_C) members have no offset in the Game-SDK: found by name on
 	// first use. A member that is not there leaves its feature off.

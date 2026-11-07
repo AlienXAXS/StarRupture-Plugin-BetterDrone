@@ -569,18 +569,19 @@ namespace
 
     // A vein grants GrantingMomentResourceCount each time its damage
     // threshold is reached.
-    bool BagHasRoomForVein(SDK::ACrCharacterPlayerBase* character, const SDK::FCrInfiniteOreData& data)
+    bool BagHasRoomForVein(SDK::ACrCharacterPlayerBase* character, const void* data)
     {
         std::vector<Grant> grants;
-        AddGrant(grants, DroneFields::ValueOr(DroneFields::VeinResource, &data),
-            DroneFields::ValueOr(DroneFields::VeinGrantCount, &data, 0));
+        AddGrant(grants, DroneFields::ValueOr(DroneFields::VeinResource, data),
+            DroneFields::ValueOr(DroneFields::VeinGrantCount, data, 0));
         return BagHasRoom(character, grants);
     }
 
     // The ore data of a vein's physical material, as the ore subsystem maps
     // it, for the check before the first request: that request can already
-    // grant. Null when the material is not a vein.
-    const SDK::FCrInfiniteOreData* VeinOreData(SDK::ACrCharacterPlayerBase* character, SDK::UPhysicalMaterial* material)
+    // grant. Null when the material is not a vein, or the map cannot be read.
+    // The pointer is good for this tick only.
+    const uint8_t* VeinOreData(SDK::ACrCharacterPlayerBase* character, SDK::UPhysicalMaterial* material)
     {
         auto* ores = static_cast<SDK::UCrOreSubsystem*>(
             SDK::USubsystemBlueprintLibrary::GetWorldSubsystem(character, SDK::UCrOreSubsystem::StaticClass()));
@@ -589,14 +590,26 @@ namespace
         if (!veinsAt)
             return nullptr;
 
-        // Not const: the SDK's const TMap indexer does not compile.
-        auto& veins = *veinsAt;
-        for (int32_t i = 0; i < veins.NumAllocated(); ++i)
+        // Walked at the stride of the running game's pair layout (key and value
+        // sizes), not the compiled one.
+        const PluginMap::ScriptMapView veins(veinsAt,
+            PluginMap::MapLayout(sizeof(void*), alignof(void*),
+                DroneFields::VeinDataSize.resolvedSize, alignof(SDK::FCrInfiniteOreData)));
+        if (!veins)
         {
-            if (veins.IsValidIndex(i) && veins[i].Key() == material)
-                return &veins[i].Value();
+            static bool logged = false;
+            if (!logged)
+            {
+                logged = true;
+                LOG_WARN("DroneLaser: the vein ore map cannot be read (%s); the bag check skips veins", veins.ReasonText());
+            }
+            return nullptr;
         }
-        return nullptr;
+
+        return veins.Find([material](const uint8_t* key)
+        {
+            return *reinterpret_cast<SDK::UPhysicalMaterial* const*>(key) == material;
+        });
     }
 
     // Whether the target being mined can still be granted into the bag. A
@@ -611,7 +624,7 @@ namespace
 
         const auto* state = DroneFields::CurrentlyMinedOre.In(comp);
         const auto* vein  = state ? DroneFields::MinedVeinData.In(state) : nullptr;
-        return !vein || BagHasRoomForVein(character, *vein);
+        return !vein || BagHasRoomForVein(character, vein);
     }
 
     // Whether a new target can be started: both kinds can grant on the
@@ -621,8 +634,8 @@ namespace
         if (aim.kind == OreKind::Actor)
             return BagHasRoomForOre(character, aim.ore);
 
-        const SDK::FCrInfiniteOreData* data = VeinOreData(character, aim.vein);
-        return !data || BagHasRoomForVein(character, *data);
+        const uint8_t* data = VeinOreData(character, aim.vein);
+        return !data || BagHasRoomForVein(character, data);
     }
 
     // ---- stop and start -------------------------------------------------------

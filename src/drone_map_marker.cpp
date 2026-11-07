@@ -67,6 +67,7 @@ namespace
     uint64_t g_lastLogMs = 0;
     bool     g_failed    = false;
     bool     g_loggedColourFallback = false;
+    bool     g_loggedWidgetMap = false;
 
     // ---- render thread --------------------------------------------------------
 
@@ -165,6 +166,16 @@ namespace
         return std::fabs(dx) <= kTolerancePx && std::fabs(dy) <= kTolerancePx ? 1 : 0;
     }
 
+    // The widget map is read at a layout computed from the running game; when it
+    // cannot be this map's, the marker stays hidden. Said once.
+    void LogWidgetMapOnce(const char* why)
+    {
+        if (g_loggedWidgetMap)
+            return;
+        g_loggedWidgetMap = true;
+        LOG_WARN("DroneMapMarker: the map widgets cannot be read (%s); no marker will show", why);
+    }
+
     // Looks at up to kMaxReferences building markers the game shows and counts
     // how many sit where the transform puts them.
     void CheckReferences(SDK::UCrUW_MapMenuMapArea* area, SDK::ACrMapMenuDataReplicationHelper* helper,
@@ -180,34 +191,41 @@ namespace
             if (!widgetsAt || !dataAt)
                 return;
 
-            auto& widgets = *widgetsAt;
-            const int32_t allocated = widgets.NumAllocated();
+            // The widget map is walked at the stride of the running game's
+            // pair layout (key and value sizes), not the compiled one.
+            const PluginMap::ScriptMapView widgets(widgetsAt,
+                PluginMap::MapLayout(sizeof(SDK::FMassEntityHandle), alignof(SDK::FMassEntityHandle),
+                    DroneFields::MarkerRepresentationSize.resolvedSize, alignof(SDK::FEntityMarkerUIRepresentation)));
+            if (!widgets)
+            {
+                LogWidgetMapOnce(widgets.ReasonText());
+                return;
+            }
+
             auto& data = *dataAt;
             const int32_t dataNum = data.Num();
-            if (allocated < 0 || allocated > kMaxSaneCount || dataNum < 0 || dataNum > kMaxSaneCount)
+            if (widgets.Num() > kMaxSaneCount || dataNum < 0 || dataNum > kMaxSaneCount)
                 return;
 
             int scanned = 0;
-            for (int pass = 0; pass < 2; ++pass)
+            bool done = false;
+            for (int pass = 0; pass < 2 && !done; ++pass)
             {
-                for (int32_t i = 0; i < allocated; ++i)
+                widgets.ForEach([&](uint8_t* keyAt, uint8_t* valueAt)
                 {
-                    if (!widgets.IsValidIndex(i))
-                        continue;
-
-                    const SDK::FMassEntityHandle& handle = widgets[i].Key();
+                    const auto& handle = *reinterpret_cast<const SDK::FMassEntityHandle*>(keyAt);
                     const bool isLast = handle.Index == g_refIndex && handle.SerialNumber == g_refSerial;
                     if (isLast != (pass == 0))
-                        continue;
+                        return true;
                     if (pass == 1 && ++scanned > kMaxScan)
-                        break;
+                        return false;
 
                     for (int32_t d = 0; d < dataNum; ++d)
                     {
                         const uint8_t* b = PluginMap::ElementAt(data, d, DroneFields::MarkerItemSize);
                         const auto* bHandle  = DroneFields::MarkerBuildingHandle.In(b);
                         const auto* location = DroneFields::MarkerLocation.In(b);
-                        auto*       marker   = DroneFields::MarkerWidget.In(&widgets[i].Value());
+                        auto*       marker   = DroneFields::MarkerWidget.In(valueAt);
                         if (!bHandle || !location || !marker)
                             continue;
                         if (bHandle->Index != handle.Index || bHandle->SerialNumber != handle.SerialNumber)
@@ -230,8 +248,12 @@ namespace
                     }
 
                     if (*checked >= kMaxReferences)
-                        return;
-                }
+                    {
+                        done = true;
+                        return false;
+                    }
+                    return true;
+                });
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
