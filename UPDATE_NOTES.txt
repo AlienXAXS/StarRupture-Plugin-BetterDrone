@@ -6,4 +6,4 @@
 - Boost follows your Sprint key as soon as the game has it
 - Reload in the drone vents the mining laser's heat, like the mining tool's R
 - New option Keep Area Around Body Loaded: the world around your parked character stays loaded while the drone is out (on by default)
-- The system voice (rupture warnings and other spoken lines) is heard at normal volume while the drone is far from your body
+- The system voice (rupture warnings and other spoken lines) stays audible while the drone is far from your body; with other players in the game it may still fade
