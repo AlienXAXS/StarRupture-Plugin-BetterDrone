@@ -51,6 +51,10 @@ At either end the toast shows where you are. Off every preset, a step goes to th
 
 Fly up to a building, look at it and press the interact key (**E**; rebindable on the loader's Config page, Interaction) to open its UI, as you would on foot. It also works in delete mode, and gathers wild plants, fruit and eggs (host and single player only).
 
+### Hotbar from the drone <sup>[✦](#msantoro12)</sup>
+
+Hold **Ctrl** and scroll the mouse wheel while the drone is out to change your hotbar slot, one slot per notch, as the wheel does on foot. The wheel is taken only while you fly, so Ctrl and the wheel work as before on foot, with a menu open or with a loader window open. Holding Ctrl does nothing else here: a key bound to it, such as one that slows the drone, still works. A mod that also uses Ctrl and the wheel, such as a minimap zoom, loses those notches while the drone is out if BetterDrone loads before it.
+
 ### The map from the drone <sup>[✦](#msantoro12)</sup>
 
 - **Open it:** the map key (**M**; rebindable on the loader's Config page, Interaction) opens the map while you fly and closes it again, never over another menu.
