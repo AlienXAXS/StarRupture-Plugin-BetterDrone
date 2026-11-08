@@ -6,3 +6,4 @@
 - Boost follows your Sprint key as soon as the game has it
 - Reload in the drone vents the mining laser's heat, like the mining tool's R
 - New option Keep Area Around Body Loaded: the world around your parked character stays loaded while the drone is out (on by default)
+- Saving over a saved preset now asks "You're saving over <name>. Continue?" first
