@@ -90,6 +90,8 @@ static void OnEngineTick(float deltaSeconds)
     TickDroneMenuOpen();
     if (DroneFields::Features::MapMarker.On())
         TickDroneMapMarker(deltaSeconds);
+    if (DroneFields::Features::MapFollow.On())
+        TickDroneMapFollow();
     if (DroneFields::Features::Speedometer.On())
         TickDroneSpeedometer();
     TickDronePresetKeys();
@@ -164,6 +166,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
     ResolveWavePatch(self, scanner);
     ResolveDroneInteract(self, scanner);
     ResolveDroneMap(self, scanner);
+    ResolveDroneMapFollow(self, scanner);
     ResolveDroneFog(self, scanner);
     ResolveDroneBuildMenu(self, scanner);
     ResolveDroneLaser(self, scanner);
@@ -241,6 +244,8 @@ extern "C" __declspec(dllexport) void PluginShutdown()
     ShutdownWavePatch();
     if (DroneFields::Features::Audio.On())
         DroneAudio::Shutdown();
+    if (DroneFields::Features::MapFollow.On())
+        ShutdownDroneMapFollow();
     if (DroneFields::Features::MapMarker.On())
         ShutdownDroneMapMarker(g_self);
     if (DroneFields::Features::Speedometer.On())
