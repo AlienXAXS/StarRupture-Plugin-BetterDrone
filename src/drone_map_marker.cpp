@@ -370,17 +370,19 @@ namespace
     //
     // The matrix is read back after each call. At the start of the next tick it
     // should still be where that call left it; a different pan means the player
-    // moved the map (mouse drag, arrow keys, gamepad), and follow stops for the
-    // rest of that open. A different scale is a zoom and is followed through.
+    // moved the map (mouse drag, arrow keys, gamepad), and follow stops until the
+    // map is reopened or the Map Centre Key is pressed. A different scale is a zoom and is followed through.
     // When the drone is gone the map is centred on the player's body, as the
     // game opens it, and nothing else of the map was changed.
     //
     // The Map Centre Key (the game's Center on player key, C) switches follow
     // off and on without being consumed. The game still centres on the player
     // when it is pressed, and follow stays off, so the map stays on the body.
-    // Pressed again, follow resumes on the drone. The game's key has no hook
-    // here: its binding is a data table row on the map widget, not a key that
-    // can be read, so the loader's keybind stands in for it.
+    // Pressed again, follow resumes on the drone. The game's key is a data
+    // table row on the map widget; reading it needs version map rows this
+    // plugin does not have, so the loader's keybind stands in for it. Only the
+    // keyboard key toggles: the on-screen button and the gamepad still centre
+    // the game's map and read as a hand.
 
     // UE::Math::TVector<float>, the location CenterOnLocation takes.
     struct MapPoint
@@ -411,7 +413,7 @@ namespace
 
     struct Follow
     {
-        bool  stopped;     // off for this open
+        bool  stopped;     // off until the map is reopened or the Map Centre Key is pressed
         bool  onBody;      // the player pressed the Map Centre Key: the map stays on the body
         bool  centred;     // the map has been moved this open
         bool  haveBase;    // scale, tx and ty hold the matrix as the last call left it
@@ -503,7 +505,7 @@ namespace
             return;
 
         g_follow.stopped = true;
-        LOG_INFO("DroneMapFollow: map follow off until the map is reopened: %s", why);
+        LOG_INFO("DroneMapFollow: map follow off until the map is reopened or the map centre key is pressed: %s", why);
     }
 
     // Ends follow wherever it stands (the drone was recalled or died, the map
@@ -803,6 +805,8 @@ void InitDroneMapFollow(IPluginSelf* self)
 
     DroneConfig::Config::ReadMapCentreKey(g_centreKeyName, sizeof(g_centreKeyName));
     self->hooks->Input->RegisterKeybindByName(g_centreKeyName, EModKeyEvent::Pressed, &OnCentreKey);
+
+    LOG_INFO("DroneMapFollow: map centre toggle on '%s'", g_centreKeyName);
 }
 
 void ShutdownDroneMapFollow(IPluginSelf* self)
