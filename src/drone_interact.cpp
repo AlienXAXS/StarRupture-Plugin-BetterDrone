@@ -1,11 +1,15 @@
 #include "drone_interact.h"
 #include "drone_config.h"
 #include "drone_fields.h"
+#include "drone_key_vk.h"
+#include "drone_sprint_key.h"
+#include "object_ref.h"
 #include "plugin_helpers.h"
 #include <plugin_interface.h>
 #include <Chimera_classes.hpp>
 #include <ChimeraUI_classes.hpp>
 #include <CommonGame_classes.hpp>
+#include <EnhancedInput_classes.hpp>
 #include <EnhancedInput_structs.hpp>
 #include <Engine_classes.hpp>
 #include <GameplayAbilities_classes.hpp>
@@ -85,6 +89,24 @@ namespace
         "40 53 48 83 EC 40 80 B9 ?? ?? ?? ?? ?? 48 8B D9 75 ?? B0 01";
     constexpr const char* kInteractPattern =
         "40 55 56 41 56 41 57 48 8B EC 48 83 EC 78";
+
+    // The context interaction (the game's "hold to take all"): Started picks
+    // what the target offers, Context runs it, Completed drops it. Each takes
+    // only the controller. Called by this plugin, never hooked. Resolved during
+    // OnPluginLoadHooks; null means the key is missing on this build, which
+    // turns off only the hold (DroneFields::Features::HoldTakeAll).
+    InteractVoid_t g_contextStarted   = nullptr;
+    InteractVoid_t g_context          = nullptr;
+    InteractVoid_t g_contextCompleted = nullptr;
+
+    constexpr const char* kContextStartedPattern =
+        "40 55 56 41 56 41 57 48 8B EC 48 83 EC 68 45 33 FF";
+    constexpr const char* kContextPattern =
+        "40 57 48 81 EC 90 00 00 00 80 3D ?? ?? ?? ?? 00 48 8B F9 48 8B 81 ?? ?? ?? ??";
+    // The controller member it clears (0xD90) is wildcarded to its low byte:
+    // with the whole offset open the pattern also matches seven other functions.
+    constexpr const char* kContextCompletedPattern =
+        "48 83 EC 38 48 81 C1 ?? 0D 00 00 48 8D 44 24 20 0F 57 C0 F3 0F 7F 44 24 20 48 3B C8 74 ?? 48 C7 01";
 
     HookHandle g_hookTargetsChanged    = nullptr;
     HookHandle g_hookInteractStarted   = nullptr;
@@ -342,79 +364,250 @@ namespace
                  movedBody ? ", ranged from the drone" : "");
     }
 
+    // The drone camera to stand the body at while a press or hold reaches the
+    // current target, or null when the target is ranged as it is. Only where
+    // the gather is granted: a client also asks the server, which checks the
+    // range again against the body it holds, refuses, and leaves the plant
+    // marked gathered on the client alone.
+    SDK::UCameraComponent* RangingCamera(SDK::ACrPlayerControllerBase* pc, SDK::ACrCharacterPlayerBase* character)
+    {
+        SDK::UCameraComponent* droneCamera = DroneFields::ValueOr(DroneFields::DroneCamera, character);
+        if (character->RootComponent && droneCamera && IsGatherableTarget(pc) &&
+            SDK::UKismetSystemLibrary::IsServer(character))
+            return droneCamera;
+
+        return nullptr;
+    }
+
+    // Set when the hold ran the context interaction on a logistics drone on the
+    // current press, so the release that ends the same press does not also take
+    // the one item the plain interact would. A hold on anything else leaves the
+    // release alone. Cleared by the next plain press. Game thread only.
+    bool g_holdRan = false;
+
     // Mirrors UCrInputNativeInteract: press starts a held interaction, release
     // finishes it, and an interaction that never started falls through to the
     // instant one.
     void DispatchInteract(SDK::ACrPlayerControllerBase* pc, SDK::ACrCharacterPlayerBase* character,
                           bool press, bool release)
     {
-        // Only where the gather is granted: a client also asks the server,
-        // which checks the range again against the body it holds, refuses,
-        // and leaves the plant marked gathered on the client alone.
         std::optional<BodyAtDroneCamera> atDrone;
-        SDK::UCameraComponent* droneCamera = DroneFields::ValueOr(DroneFields::DroneCamera, character);
-        if (character->RootComponent && droneCamera && IsGatherableTarget(pc) &&
-            SDK::UKismetSystemLibrary::IsServer(character))
-            atDrone.emplace(character->RootComponent, droneCamera);
+        if (SDK::UCameraComponent* camera = RangingCamera(pc, character))
+            atDrone.emplace(character->RootComponent, camera);
 
         if (press)
         {
+            g_holdRan = false;
             LogPressTarget(pc, atDrone.has_value());
             reinterpret_cast<InteractVoid_t>(g_addrInteractStarted)(pc);
         }
 
-        if (release && !reinterpret_cast<InteractBool_t>(g_addrInteractCompleted)(pc))
-            reinterpret_cast<InteractVoid_t>(g_addrInteract)(pc);
+        if (release)
+        {
+            // Completed is still called after a hold: it winds the press back.
+            const bool handled = reinterpret_cast<InteractBool_t>(g_addrInteractCompleted)(pc);
+            if (!handled && !g_holdRan)
+                reinterpret_cast<InteractVoid_t>(g_addrInteract)(pc);
+            g_holdRan = false;
+        }
     }
 
-    // Spelled out rather than reusing DroneCharacter() so a keypress that goes
-    // nowhere says which condition stopped it. Every one of these is a state the
-    // player can be in legitimately, so silence here is indistinguishable from
-    // the key never arriving at all -- which is the report this has to answer.
+    // Why an interact cannot go to this controller's drone right now, or null
+    // when it can, with the character it would act for. Spelled out rather
+    // than reusing DroneCharacter() so a keypress that goes nowhere says which
+    // condition stopped it. Every one of these is a state the player can be in
+    // legitimately, so silence is indistinguishable from the key never
+    // arriving at all -- which is the report this has to answer.
+    const char* InteractGate(SDK::ACrPlayerControllerBase* pc, SDK::ACrCharacterPlayerBase*& character)
+    {
+        if (!pc)
+            return "no local ACrPlayerControllerBase";
+
+        character = DroneFields::ValueOr(DroneFields::CrChar, pc);
+        if (!character)
+            return "player controller has no CrChar";
+
+        if (!DroneFields::InDrone(character))
+            return "character is not in drone mode";
+
+        if (!DroneConfig::Config::ReadInteractInDroneMode())
+            return "'Interact In Drone Mode' is disabled in the config";
+
+        if (DroneFields::Dead(character))
+            return "character is dead";
+
+        // NativeOnInputInteractCompleted dereferences the pawn as a player
+        // character without checking it, so refuse to call in if it is not one.
+        if (pc->Pawn != static_cast<SDK::APawn*>(character))
+            return "the possessed pawn is not the player character";
+
+        return nullptr;
+    }
+
+    // ---- hold to take all ---------------------------------------------------
+
+    // The game's context interaction (hold E on a building: take everything)
+    // is a Hold trigger on UCrInputNativeInteractContext's action, bound by the
+    // game's input component to the controller. The drone is not what that
+    // component is bound for, and no Enhanced Input event reaches it, so the
+    // key is polled here, as the boost and Reload keys are, and the three
+    // controller functions the game binds are called directly.
+    FollowedKey g_holdKey;
+    bool        g_holdInDrone = false;   // last tick
+    bool        g_holdDown    = false;   // last tick
+    bool        g_holdArmed   = false;   // pressed in the drone, not yet run
+    uint64_t    g_holdDownMs  = 0;
+    float       g_holdSeconds = 0.0f;
+    bool        g_holdTimeRead = false;  // g_holdSeconds came from the game's mapping
+    bool        g_holdOn      = false;
+
+    // What the crosshair was on when the key went down. The hold runs on that
+    // and on nothing else.
+    ObjectRef<SDK::AActor> g_holdTarget;
+
+    // True while a loader or plugin window has the keyboard, so typing in it
+    // does not arm the hold.
+    bool OverlayOpen()
+    {
+        auto* ui = GetSelf()->hooks->UI;
+        return ui && ui->IsOverlayOpen && ui->IsOverlayOpen();
+    }
+
+    // The hold time to wait for: the game's own Hold trigger on that action,
+    // else Unreal's default for the trigger. Logged with where it came from.
+    // Once it has come from the game's mapping it does not change, so it is
+    // not looked up again.
+    void ResolveHoldSeconds()
+    {
+        float seconds = 0.0f;
+        const char* source = "the game's input mapping";
+        const bool game = ResolveInputHandlerHoldSeconds(SDK::UCrInputNativeInteractContext::StaticClass(), &seconds);
+        if (!game)
+        {
+            const SDK::UInputTriggerHold* defaults = SDK::UInputTriggerHold::GetDefaultObj();
+            seconds = defaults ? defaults->HoldTimeThreshold : 0.0f;
+            source  = "the Hold trigger's engine default, the game's mapping was not reachable";
+            if (!(seconds > 0.0f))
+            {
+                seconds = 1.0f;
+                source  = "1 second, nothing readable";
+            }
+        }
+
+        if (seconds != g_holdSeconds)
+            LOG_INFO("DroneInteract: hold to take all after %.2f s, from %s", seconds, source);
+        g_holdSeconds  = seconds;
+        g_holdTimeRead = game;
+    }
+
+    // Runs the context interaction on the target the key went down on, if the
+    // crosshair is still on it: Started picks what the target offers and stores
+    // it on the controller, Context runs it, and Completed drops it again, all
+    // in this call so nothing stays stored past the tick. Game thread only (the
+    // tick).
+    void RunHold(SDK::ACrPlayerControllerBase* pc, SDK::AActor* pressTarget)
+    {
+        SDK::ACrCharacterPlayerBase* character = nullptr;
+        if (const char* gate = InteractGate(pc, character))
+        {
+            LOG_DEBUG("DroneInteract: hold finished but nothing sent -- %s", gate);
+            return;
+        }
+
+        SDK::AActor* target = DroneFields::ValueOr(DroneFields::CurrentInteractableActor, pc);
+        if (!target || target != pressTarget)
+        {
+            LOG_DEBUG("DroneInteract: hold finished but nothing sent -- the target changed");
+            return;
+        }
+
+        std::optional<BodyAtDroneCamera> atDrone;
+        if (SDK::UCameraComponent* camera = RangingCamera(pc, character))
+            atDrone.emplace(character->RootComponent, camera);
+
+        LOG_INFO("DroneInteract: hold to take all on %s%s", target->Class->GetName().c_str(),
+                 atDrone.has_value() ? ", ranged from the drone" : "");
+        const bool onDrone = target->IsA(SDK::ACrDroneBase::StaticClass());
+        g_contextStarted(pc);
+        g_context(pc);
+        g_contextCompleted(pc);
+        g_holdRan = onDrone;
+    }
+
+    // The context key goes down in the drone with no menu open, and stays down
+    // for the hold time: run the context interaction once. The key is looked up
+    // again on each entry to the drone, which picks up a rebind, and on the
+    // retry timer while it is not settled; E stands in, logged once. The lookup
+    // starts over when the drone ends: the context action is bound on foot, so
+    // that is where a rebind shows, and the drone keeps the key found there. A
+    // short press never gets here, so it stays the plain interact.
+    void HoldTick(SDK::ACrPlayerControllerBase* pc)
+    {
+        const bool inDrone = PilotingCharacter(pc) != nullptr;
+        if (!inDrone && g_holdInDrone)
+            g_holdKey.Restart();
+
+        if ((inDrone && !g_holdInDrone) || g_holdKey.Due())
+        {
+            char keyName[64] = {};
+            const FollowedKey::Result result = g_holdKey.Resolve(
+                SDK::UCrInputNativeInteractContext::StaticClass(), inDrone, 'E', keyName, sizeof(keyName));
+            if (result.followed)
+                LOG_INFO("DroneInteract: hold to take all on the game's context interact key (%s)", keyName);
+            else if (result.firstFallback)
+                LOG_WARN("DroneInteract: could not resolve the game's context interact key (%s), using E", result.why);
+            if (inDrone && !g_holdInDrone && !g_holdTimeRead)
+                ResolveHoldSeconds();
+        }
+        g_holdInDrone = inDrone;
+
+        const bool down    = g_holdKey.vk != 0 && (GetAsyncKeyState(g_holdKey.vk) & 0x8000) != 0 && GameHasFocus() &&
+                             !OverlayOpen();
+        const bool pressed = down && !g_holdDown;
+        g_holdDown         = down;
+
+        if (!down)
+        {
+            g_holdArmed = false;
+            g_holdTarget.Reset();
+            return;
+        }
+
+        const uint64_t now = GetTickCount64();
+        if (pressed)
+        {
+            SDK::AActor* target = inDrone ? DroneFields::ValueOr(DroneFields::CurrentInteractableActor, pc) : nullptr;
+            g_holdArmed  = target && !IsGameMenuOpen();
+            g_holdDownMs = now;
+            g_holdTarget.Set(g_holdArmed ? target : nullptr);
+        }
+
+        if (!g_holdArmed || !inDrone || g_holdSeconds <= 0.0f ||
+            now - g_holdDownMs < static_cast<uint64_t>(g_holdSeconds * 1000.0f))
+            return;
+
+        g_holdArmed = false;
+        SDK::AActor* pressTarget = g_holdTarget.Get();
+        g_holdTarget.Reset();
+        if (pressTarget && !IsGameMenuOpen())
+            RunHold(pc, pressTarget);
+    }
+
     void OnTick(float)
     {
+        if (g_holdOn)
+            HoldTick(LocalController());
+
         const bool press   = g_pendingPress.exchange(false);
         const bool release = g_pendingRelease.exchange(false);
         if (!press && !release)
             return;
 
-        SDK::ACrPlayerControllerBase* pc = LocalController();
-        if (!pc)
+        SDK::ACrPlayerControllerBase* pc        = LocalController();
+        SDK::ACrCharacterPlayerBase*  character = nullptr;
+        if (const char* gate = InteractGate(pc, character))
         {
-            LogGateOnce("no local ACrPlayerControllerBase");
-            return;
-        }
-
-        SDK::ACrCharacterPlayerBase* character = DroneFields::ValueOr(DroneFields::CrChar, pc);
-        if (!character)
-        {
-            LogGateOnce("player controller has no CrChar");
-            return;
-        }
-
-        if (!DroneFields::InDrone(character))
-        {
-            LogGateOnce("character is not in drone mode");
-            return;
-        }
-
-        if (!DroneConfig::Config::ReadInteractInDroneMode())
-        {
-            LogGateOnce("'Interact In Drone Mode' is disabled in the config");
-            return;
-        }
-
-        if (DroneFields::Dead(character))
-        {
-            LogGateOnce("character is dead");
-            return;
-        }
-
-        // NativeOnInputInteractCompleted dereferences the pawn as a player
-        // character without checking it, so refuse to call in if it is not one.
-        if (pc->Pawn != static_cast<SDK::APawn*>(character))
-        {
-            LogGateOnce("the possessed pawn is not the player character");
+            LogGateOnce(gate);
             return;
         }
 
@@ -881,6 +1074,16 @@ void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
         DroneFields::Keys::InteractCompleted, kInteractCompletedPattern);
     g_addrInteract = DroneFields::ResolveFunction(self, scanner,
         DroneFields::Keys::Interact, kInteractPattern);
+
+    if (DroneFields::Features::HoldTakeAll.On())
+    {
+        g_contextStarted = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::ContextStarted,
+            PLUGIN_MAP_PATTERN(kContextStartedPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
+        g_context = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::Context,
+            PLUGIN_MAP_PATTERN(kContextPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
+        g_contextCompleted = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::ContextCompleted,
+            PLUGIN_MAP_PATTERN(kContextCompletedPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
+    }
 }
 
 bool InitDroneInteract()
@@ -890,6 +1093,12 @@ bool InitDroneInteract()
         RemoveHooks();
         return false;
     }
+
+    // Without the three context functions only the hold is off; the interact
+    // key above keeps working.
+    g_holdOn = DroneFields::Features::HoldTakeAll.On() && g_contextStarted && g_context && g_contextCompleted;
+    if (!g_holdOn)
+        LOG_INFO("DroneInteract: hold to take all is off on this build");
 
     GetSelf()->hooks->Engine->RegisterOnTick(OnTick);
 
@@ -982,6 +1191,16 @@ void ShutdownDroneInteract()
 
     g_pendingPress.store(false, std::memory_order_relaxed);
     g_pendingRelease.store(false, std::memory_order_relaxed);
+
+    g_holdOn      = false;
+    g_holdKey     = FollowedKey{};
+    g_holdInDrone = false;
+    g_holdDown    = false;
+    g_holdArmed   = false;
+    g_holdRan     = false;
+    g_holdSeconds = 0.0f;
+    g_holdTimeRead = false;
+    g_holdTarget.Reset();
 
     LOG_DEBUG("DroneInteract: hooks removed");
 }
