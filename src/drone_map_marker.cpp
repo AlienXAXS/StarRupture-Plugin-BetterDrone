@@ -1,6 +1,7 @@
 #include "drone_map_marker.h"
 #include "drone_interact.h"
 #include "drone_marker_icon.h"
+#include "object_ref.h"
 #include "overlay_widget.h"
 #include "plugin_helpers.h"
 #include "drone_fields.h"
@@ -9,9 +10,7 @@
 #include <ChimeraUI_classes.hpp>
 #include <Engine_classes.hpp>
 #include <UMG_classes.hpp>
-#include <atomic>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <windows.h>
@@ -151,24 +150,32 @@ namespace
     }
 
     // A building marker's widget sits with its top-left corner on the building's
-    // world point. -1 when it is hidden or not laid out, else 1 when it is where
-    // the transform says and 0 when it is not.
+    // world point. -1 when it is hidden, not laid out or where the transform puts
+    // it outside the canvas (Slate does not paint it there, so its geometry is
+    // whatever it last was), else 1 when it is where the transform says and 0
+    // when it is not.
     int CompareReference(SDK::UCrUW_MapMenuMarker* marker, double worldX, double worldY, SDK::UObject* ctx,
-                         const Transform& t)
+                         const Transform& t, const Geo& canvas)
     {
+        const double expectedX = t.originX + worldX * t.scale;
+        const double expectedY = t.originY + worldY * t.scale;
+        if (expectedX < canvas.topLeft[0] || expectedX > canvas.topLeft[0] + canvas.absSize[0] ||
+            expectedY < canvas.topLeft[1] || expectedY > canvas.topLeft[1] + canvas.absSize[1])
+            return -1;
+
         Geo g;
         if (!marker || !SampleGeo(marker, ctx, &g) || !g.visible || !LaidOut(g))
             return -1;
 
-        const double dx = t.originX + worldX * t.scale - g.topLeft[0];
-        const double dy = t.originY + worldY * t.scale - g.topLeft[1];
+        const double dx = expectedX - g.topLeft[0];
+        const double dy = expectedY - g.topLeft[1];
         return std::fabs(dx) <= kTolerancePx && std::fabs(dy) <= kTolerancePx ? 1 : 0;
     }
 
     // Looks at up to kMaxReferences building markers the game shows and counts
     // how many sit where the transform puts them.
     void CheckReferences(SDK::UCrUW_MapMenuMapArea* area, SDK::ACrMapMenuDataReplicationHelper* helper,
-                         SDK::UObject* ctx, const Transform& t, int* checked, int* agreed)
+                         SDK::UObject* ctx, const Transform& t, const Geo& canvas, int* checked, int* agreed)
     {
         *checked = 0;
         *agreed  = 0;
@@ -213,7 +220,7 @@ namespace
                         if (bHandle->Index != handle.Index || bHandle->SerialNumber != handle.SerialNumber)
                             continue;
 
-                        const int r = CompareReference(*marker, location->X, location->Y, ctx, t);
+                        const int r = CompareReference(*marker, location->X, location->Y, ctx, t, canvas);
                         if (r >= 0)
                         {
                             ++*checked;
@@ -245,7 +252,7 @@ namespace
     struct DroneState
     {
         bool   ok;
-        double x, y, yawDeg;
+        double x, y, z, yawDeg;
     };
 
     bool ReadDrone(SDK::ACrPlayerControllerBase* pc, DroneState* out)
@@ -261,6 +268,7 @@ namespace
             const SDK::FVector location = drone->K2_GetActorLocation();
             out->x      = location.X;
             out->y      = location.Y;
+            out->z      = location.Z;
             out->yawDeg = drone->K2_GetActorRotation().Yaw;
             out->ok = true;
             return true;
@@ -349,6 +357,270 @@ namespace
                  "terrain transform puts it", checked, kTolerancePx);
     }
 
+    // ---- following the drone ---------------------------------------------------
+    //
+    // The map's pan and zoom are kept in a matrix of the map area, which the
+    // widget's own tick turns into the terrain's position every frame, so a
+    // position written to the terrain from outside is overwritten the next
+    // frame. Each tick this asks the map area to centre on the drone's world
+    // location instead, the call behind the game's own "Center on player". It
+    // is absolute against the matrix, so repeating it cannot overshoot.
+    //
+    // The matrix is read back after each call. At the start of the next tick it
+    // should still be where that call left it; a different pan means the player
+    // moved the map (mouse drag, arrow keys, gamepad), and follow stops for the
+    // rest of that open. A different scale is a zoom and is followed through.
+    // When the drone is gone the map is centred on the player's body, as the
+    // game opens it, and nothing else of the map was changed.
+
+    // UE::Math::TVector<float>, the location CenterOnLocation takes.
+    struct MapPoint
+    {
+        float x, y, z;
+    };
+
+    typedef void (__fastcall* CenterOnLocation_t)(SDK::UCrUW_MapMenuMapArea* area, MapPoint* location);
+
+    // Resolved during OnPluginLoadHooks; null when the loader has no row for
+    // this build, which turns the feature off. The pattern is mapping input only.
+    CenterOnLocation_t g_centerOnLocation = nullptr;
+
+    constexpr const char* kCenterOnLocationPattern =
+        "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 40 48 83 79 30 00 48 8B F2 0F 29 74 24 30 48 8B F9 74 ?? "
+        "E8 ?? ?? ?? ?? 48 8B D0 48 8D 4F 30 E8 ?? ?? ?? ?? 84 C0 74 ?? 48 8B 4F 30 48 85 C9 74 ?? 48 8D 54 24 20";
+
+    // A pan under this (widget units), summed over the ticks since the last zoom,
+    // is the float noise of the matrix, not a hand.
+    constexpr float kPanTolerance   = 0.25f;
+    constexpr float kScaleTolerance = 1e-4f;
+
+    // For this long after follow starts, a pan the game made itself while opening
+    // the map (centring on the player, restoring a saved pan) is followed from
+    // where it is instead of ending follow. Time, not ticks: the frame rate
+    // decides how many ticks the game's opening takes.
+    constexpr uint64_t kSettleMs = 500;
+
+    struct Follow
+    {
+        bool  stopped;     // off for this open
+        bool  centred;     // the map has been moved this open
+        bool  haveBase;    // scale, tx and ty hold the matrix as the last call left it
+        float scale;
+        float tx, ty;
+        float driftX, driftY;   // pan since the last call, summed over the ticks
+        uint64_t startMs;       // GetTickCount64 at the first call; 0 before it
+    };
+
+    Follow                                g_follow = {};
+    ObjectRef<SDK::UCrUW_MapMenuMapArea>  g_followArea;
+    bool                                  g_followFailed = false;
+
+    struct MatrixRead
+    {
+        float scale;
+        float tx, ty;   // the translation row, widget units
+    };
+
+    bool ReadMatrix(SDK::UCrUW_MapMenuMapArea* area, MatrixRead* out)
+    {
+        __try
+        {
+            const MapAreaMatrixData* matrix = DroneFields::MapAreaMatrix.In(area);
+            if (!matrix)
+                return false;
+
+            out->scale = matrix->m[0][0];
+            out->tx    = matrix->m[3][0];
+            out->ty    = matrix->m[3][1];
+            return std::isfinite(out->scale) && std::isfinite(out->tx) && std::isfinite(out->ty) && out->scale > 0.0f;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    // Where the player's body stands: the map's own player marker sits there.
+    bool ReadBody(SDK::ACrPlayerControllerBase* pc, MapPoint* out)
+    {
+        __try
+        {
+            SDK::ACrCharacterPlayerBase* character = DroneFields::ValueOr(DroneFields::CrChar, pc);
+            if (!character)
+                return false;
+
+            const SDK::FVector location = character->K2_GetActorLocation();
+            out->x = static_cast<float>(location.X);
+            out->y = static_cast<float>(location.Y);
+            out->z = static_cast<float>(location.Z);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    // True once the map area has its size, so the call to centre on a location
+    // has a half size to work from.
+    bool AreaLaidOut(SDK::UCrUW_MapMenuMapArea* area)
+    {
+        SDK::UWidget* canvas = DroneFields::ValueOr(DroneFields::MapCanvasPanel, area);
+        Geo geo;
+        return canvas && SampleGeo(canvas, LocalPlayerController(), &geo) && LaidOut(geo);
+    }
+
+    // Drops the state, touching no game object.
+    void ForgetFollow()
+    {
+        g_follow = {};
+        g_followArea.Reset();
+    }
+
+    void StopFollow(const char* why)
+    {
+        if (g_follow.stopped)
+            return;
+
+        g_follow.stopped = true;
+        LOG_INFO("DroneMapFollow: map follow off until the map is reopened: %s", why);
+    }
+
+    // Ends follow wherever it stands (the drone was recalled or died, the map
+    // closed or replaced, the world ended): the map goes back on the player's
+    // body if it is still there and this code moved it. A stopped follow leaves
+    // the map where the player put it.
+    void EndFollow()
+    {
+        SDK::UCrUW_MapMenuMapArea* area = g_followArea.Get();
+        if (area && g_follow.centred && !g_follow.stopped)
+        {
+            MapPoint body;
+            if (ReadBody(LocalPlayerController(), &body))
+                g_centerOnLocation(area, &body);
+        }
+        ForgetFollow();
+    }
+
+    void FollowImpl()
+    {
+        if (!IsLocalPlayerInDrone())
+        {
+            EndFollow();
+            return;
+        }
+
+        SDK::UCrUW_MapMenu*        map  = ActiveLocalMap();
+        SDK::UCrUW_MapMenuMapArea* area = DroneFields::ValueOr(DroneFields::MapMenuMapArea, map);
+        if (!area)
+        {
+            EndFollow();
+            return;
+        }
+
+        // A new map widget is a new open.
+        if (g_followArea.Get() != area)
+        {
+            EndFollow();
+            g_followArea.Set(area);
+        }
+
+        Follow& f = g_follow;
+        if (f.stopped)
+            return;
+
+        DroneState drone;
+        if (!ReadDrone(LocalPlayerController(), &drone))
+            return;
+
+        // Until the first call lands, a map that is not set up yet is waited for.
+        // Once it has, a matrix that cannot be read ends follow.
+        MatrixRead now;
+        const bool readable = ReadMatrix(area, &now);
+        if (!f.haveBase && !(readable && AreaLaidOut(area)))
+            return;
+
+        if (!readable)
+        {
+            StopFollow("the map's pan and zoom could not be read");
+            return;
+        }
+
+        const uint64_t nowMs = GetTickCount64();
+        if (f.haveBase)
+        {
+            const bool zoomed  = std::fabs(now.scale - f.scale) > kScaleTolerance;
+            const bool settled = nowMs - f.startMs >= kSettleMs;
+            if (zoomed || !settled)
+            {
+                f.driftX = 0.0f;
+                f.driftY = 0.0f;
+            }
+            else
+            {
+                f.driftX += now.tx - f.tx;
+                f.driftY += now.ty - f.ty;
+                if (std::fabs(f.driftX) > kPanTolerance || std::fabs(f.driftY) > kPanTolerance)
+                {
+                    StopFollow("the map was moved by hand");
+                    return;
+                }
+            }
+        }
+
+        MapPoint target = { static_cast<float>(drone.x), static_cast<float>(drone.y), static_cast<float>(drone.z) };
+        g_centerOnLocation(area, &target);
+
+        MatrixRead after;
+        if (!ReadMatrix(area, &after))
+        {
+            StopFollow("the map's pan and zoom could not be read");
+            return;
+        }
+
+        if (!f.centred)
+            LOG_DEBUG("DroneMapFollow: following the drone on the map");
+
+        if (!f.haveBase)
+            f.startMs = nowMs;
+
+        f.centred  = true;
+        f.haveBase = true;
+        f.scale    = after.scale;
+        f.tx       = after.tx;
+        f.ty       = after.ty;
+    }
+
+    // Apart from FollowImpl: a function with __try may not hold objects that need
+    // unwinding, and the code it calls may.
+    bool RunFollowGuarded()
+    {
+        __try
+        {
+            FollowImpl();
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    // Apart from EndFollow, for the same reason: shutdown calls it outside
+    // RunFollowGuarded.
+    bool EndFollowGuarded()
+    {
+        __try
+        {
+            EndFollow();
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     void TickImpl()
     {
         if (!IsLocalPlayerInDrone())
@@ -387,7 +659,7 @@ namespace
         int checked = 0;
         int agreed  = 0;
         if (helper)
-            CheckReferences(area, helper, pc, t, &checked, &agreed);
+            CheckReferences(area, helper, pc, t, canvas, &checked, &agreed);
         if (checked > 0 && agreed == 0)
         {
             LogDisagreement(checked);
@@ -452,7 +724,6 @@ void InitDroneMapMarker(IPluginSelf* self)
 
 void ShutdownDroneMapMarker(IPluginSelf* self)
 {
-    // May run on the render thread: no game object is touched here.
     {
         std::lock_guard<std::mutex> guard(g_lock);
         g_snapshot = Snapshot{};
@@ -473,5 +744,47 @@ void TickDroneMapMarker(float)
         g_failed = true;
         Hide();
         LOG_ERROR("DroneMapMarker: access violation while reading the map; marker switched off until RELOAD");
+    }
+}
+
+void ResolveDroneMapFollow(IPluginSelf* self, IPluginHookScanner* scanner)
+{
+    if (!self || !scanner)
+        return;
+
+    g_centerOnLocation = PluginMap::FunctionAs<CenterOnLocation_t>(scanner, self,
+        DroneFields::Keys::MapCenterOnLocation, PLUGIN_MAP_PATTERN(kCenterOnLocationPattern),
+        PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
+}
+
+void ShutdownDroneMapFollow()
+{
+    // Game objects are touched only on the game thread, which is where shutdown
+    // runs when it comes from RELOAD; anywhere else the map is left as it is.
+    if (OnGameThread() && !g_followFailed)
+    {
+        if (!EndFollowGuarded())
+        {
+            g_followFailed = true;
+            ForgetFollow();
+            LOG_ERROR("DroneMapFollow: access violation while putting the map back at shutdown");
+        }
+    }
+    else
+        ForgetFollow();
+}
+
+void TickDroneMapFollow()
+{
+    if (g_followFailed || !g_centerOnLocation)
+        return;
+
+    // Fail closed: a fault while reading or moving the map stops following for
+    // the rest of the session instead of repeating every tick.
+    if (!RunFollowGuarded())
+    {
+        g_followFailed = true;
+        ForgetFollow();
+        LOG_ERROR("DroneMapFollow: access violation while moving the map; map follow switched off until RELOAD");
     }
 }

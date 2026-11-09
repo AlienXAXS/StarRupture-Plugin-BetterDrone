@@ -25,6 +25,13 @@
 
 #define DRONE_FIELD(Class, Member) SR_FIELD(decltype(SDK::Class::Member), Class, Member, 0)
 
+// The map area's pan and zoom: a native UE::Math::TMatrix<float>, row major,
+// scale on the diagonal and the translation in the last row.
+struct MapAreaMatrixData
+{
+	float m[4][4];
+};
+
 namespace DroneFields
 {
 	// The player character
@@ -82,6 +89,12 @@ namespace DroneFields
 		{ 127004, 0x1F0, static_cast<uint32_t>(sizeof(SDK::FTransform)), 0, nullptr },
 		{ 128786, 0x1F0, static_cast<uint32_t>(sizeof(SDK::FTransform)), 0, nullptr },
 	};
+
+	// The map area's pan and zoom matrix. It is native (the Game-SDK has no
+	// member for it), so it is the loader's row for the running build or the
+	// map-follow feature is off.
+	inline auto MapAreaMatrix = PluginField<MapAreaMatrixData>{ { "UCrUW_MapMenuMapArea::MapAreaMatrix",
+		"UCrUW_MapMenuMapArea", "MapAreaMatrix", PLUGIN_FIELD_NATIVE, sizeof(MapAreaMatrixData), 0x500 } };
 
 	// Drone settings and the map's fog of war
 	inline auto SpeedPerSec   = DRONE_FIELD(UAuActorPlacementDeveloperSettings, BuildingDroneSpeedPerSec);
@@ -210,7 +223,7 @@ namespace DroneFields
 			OreWeakSpots, OreIsDepleted, OreCurrentCount, OreMaxCount, WeakSpotItems, WeakSpotHealth, WeakSpotCount,
 			WeakSpotResource, InventorySlots, SlotItemId, ItemIdHandle, OreMappingData, PhysMatOreDataMap,
 			MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
-			MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint,
+			MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint, MapAreaMatrix,
 			MarkerColorData, MarkerPlayerColour,
 			HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM,
 			HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM,
@@ -234,6 +247,7 @@ namespace DroneFields
 		inline constexpr const char* HandleDeactivate   = "UCrUW_ActivatableWidget::HandleDeactivate";
 		inline constexpr const char* CanDroneBeActive   = "ACrCharacterPlayerBase::CanBuildingDroneBeActive";
 		inline constexpr const char* CheckIfInInterior  = "ACrCharacterPlayerBase::CheckIfInInterior";
+		inline constexpr const char* MapCenterOnLocation = "UCrUW_MapMenuMapArea::CenterOnLocation";
 	}
 
 	// The parts of BetterDrone that can be off while the rest runs. Each lists
@@ -264,6 +278,10 @@ namespace DroneFields
 			PluginMap::KeysOf(MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
 				MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint,
 				MarkerColorData, MarkerPlayerColour, MarkerItemSize, MarkerRepresentationSize),
+			{} };
+
+		inline PluginMap::Feature MapFollow{ "map-follow", "Map follows the drone",
+			PluginMap::KeysOf(Keys::MapCenterOnLocation, MapAreaMatrix, MapMenuMapArea, MapCanvasPanel),
 			{} };
 
 		inline PluginMap::Feature Limits{ "drone-limits", "Drone speed, boost, size and limits",
@@ -316,14 +334,14 @@ namespace DroneFields
 		// Declares them all. Call first in OnPluginLoadHooks.
 		inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
 		{
-			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, Limits, SprintKey,
+			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, MapFollow, Limits, SprintKey,
 				Announcer,
 				AlwaysAllow, WaveShelter, Interaction, MapOpen, BuildMenu, Speedometer, SpeedometerHeight, Audio);
 		}
 	}
 
-	// A game function by its map key, with this plugin's own pattern as the
-	// fallback. Every address BetterDrone resolves is a function entry, so each
+	// A game function by its map key. The pattern is mapping input only; the
+	// loader resolves from its row for the running build. Every address BetterDrone resolves is a function entry, so each
 	// request declares PLUGIN_SCAN_FUNCTION_START: some get a detour written
 	// over them and the rest are called directly. The loader then checks the
 	// match against the executable's exception directory instead of trusting
