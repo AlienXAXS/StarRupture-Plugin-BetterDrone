@@ -6,6 +6,7 @@
 #include "drone_audio.h"
 #include "drone_body_anchor.h"
 #include "drone_floor_guard.h"
+#include "drone_hotbar.h"
 #include "drone_laser.h"
 #include "drone_map_marker.h"
 #include "drone_speedometer.h"
@@ -184,6 +185,7 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
     ResolveDroneFog(self, scanner);
     ResolveDroneBuildMenu(self, scanner);
     ResolveDroneLaser(self, scanner);
+    ResolveDroneHotbar(self, scanner);
     DroneFields::Resolve(self, scanner);
 }
 
@@ -220,6 +222,8 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     InitWavePatch(DroneFields::Features::AlwaysAllow.On(), DroneFields::Features::WaveShelter.On());
     if (DroneFields::Features::Interaction.On())
         InitDroneInteract();
+    if (DroneFields::Features::HotbarCycle.On())
+        InitDroneHotbar(self);
     if (DroneFields::Features::MapOpen.On())
         InitDroneMap();
     if (DroneFields::Features::MapReveal.On())
@@ -255,6 +259,8 @@ extern "C" __declspec(dllexport) void PluginShutdown()
         ShutdownDroneLaser(g_self);
     if (DroneFields::Features::Interaction.On())
         ShutdownDroneInteract();
+    if (DroneFields::Features::HotbarCycle.On())
+        ShutdownDroneHotbar(g_self);
     if (DroneFields::Features::MapOpen.On())
         ShutdownDroneMap();
     if (DroneFields::Features::MapReveal.On())
