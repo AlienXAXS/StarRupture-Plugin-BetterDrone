@@ -335,7 +335,8 @@ namespace DroneFields
 			{} };
 
 		// Esc opens the pause menu in the drone. A part of its own: a game build
-		// without the key loses only this option, and Esc keeps ending the drone.
+		// without the key loses only this option, and Esc keeps ending the drone. The
+		// cancel-tool path of it also needs BuildMenu.
 		inline PluginMap::Feature EscPause{ "esc-pause", "Esc opens the pause menu in the drone",
 			PluginMap::KeysOf(Keys::CloseInGameMenu),
 			{ "Interaction.Esc Opens Pause Menu In Drone Mode" } };

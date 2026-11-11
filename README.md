@@ -59,7 +59,7 @@ Hold the game's context interact key (**E** by default, rebinds included) on a b
 
 ### Esc opens the pause menu <sup>[✦](#msantoro12)</sup>
 
-Turn on `Esc Opens Pause Menu In Drone Mode` (off by default) and **Esc** in the drone opens the game's pause menu, and pauses as it does on foot, instead of recalling the drone. When the menu closes you are still in the drone, in the same spot. **Q** still recalls the drone, on or off. Keyboard Esc only.
+Turn on `Esc Opens Pause Menu In Drone Mode` (off by default) and **Esc** in the drone opens the game's pause menu, and pauses as it does on foot, instead of recalling the drone. When the menu closes you are still in the drone, in the same spot. **Q** still recalls the drone, on or off. Esc while you are placing a building still leaves the drone as before. Keyboard Esc only.
 
 ### The map from the drone <sup>[✦](#msantoro12)</sup>
 
