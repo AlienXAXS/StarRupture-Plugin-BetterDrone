@@ -247,6 +247,7 @@ namespace DroneFields
 		inline constexpr const char* MapMenu            = "ACrPlayerControllerBase::NativeOnInputMapMenu";
 		inline constexpr const char* UncoverFog         = "UCrMapManuSubsystem::UncoverFogOfWar";
 		inline constexpr const char* CancelTool         = "ACrCharacterPlayerBase::NativeOnWeaponCancelTool";
+		inline constexpr const char* CloseInGameMenu    = "ACrPlayerControllerBase::NativeOnInputCloseInGameMenu";
 		inline constexpr const char* CycleWeapon        = "ACrCharacterPlayerBase::NativeOnCycleWeapon";
 		inline constexpr const char* HandleDeactivate   = "UCrUW_ActivatableWidget::HandleDeactivate";
 		inline constexpr const char* CanDroneBeActive   = "ACrCharacterPlayerBase::CanBuildingDroneBeActive";
@@ -333,6 +334,12 @@ namespace DroneFields
 			PluginMap::KeysOf(Keys::CancelTool, Keys::HandleDeactivate, BuildingMenuPlayer),
 			{} };
 
+		// Esc opens the pause menu in the drone. A part of its own: a game build
+		// without the key loses only this option, and Esc keeps ending the drone.
+		inline PluginMap::Feature EscPause{ "esc-pause", "Esc opens the pause menu in the drone",
+			PluginMap::KeysOf(Keys::CloseInGameMenu),
+			{ "Interaction.Esc Opens Pause Menu In Drone Mode" } };
+
 		inline PluginMap::Feature Speedometer{ "speedometer", "Speedometer on the drone HUD",
 			PluginMap::KeysOf(HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM),
 			{} };
@@ -355,7 +362,7 @@ namespace DroneFields
 		{
 			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, MapFollow, Limits, SprintKey,
 				Announcer,
-				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarCycle, MapOpen, BuildMenu, Speedometer, SpeedometerHeight, Audio);
+				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarCycle, MapOpen, BuildMenu, EscPause, Speedometer, SpeedometerHeight, Audio);
 		}
 	}
 

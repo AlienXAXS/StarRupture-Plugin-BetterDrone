@@ -57,6 +57,10 @@ Fly up to a building, look at it and press the interact key (**E**; rebindable o
 
 Hold the game's context interact key (**E** by default, rebinds included) on a building or a logistics drone for as long as the game asks you to on foot, and it takes everything the target holds, as holding it does on foot. A short press stays the plain interact. <sup>[✦](#msantoro12)</sup>
 
+### Esc opens the pause menu <sup>[✦](#msantoro12)</sup>
+
+Turn on `Esc Opens Pause Menu In Drone Mode` (off by default) and **Esc** in the drone opens the game's pause menu, and pauses as it does on foot, instead of recalling the drone. When the menu closes you are still in the drone, in the same spot. **Q** still recalls the drone, on or off. Keyboard Esc only.
+
 ### The map from the drone <sup>[✦](#msantoro12)</sup>
 
 - **Open it:** the map key (**M**; rebindable on the loader's Config page, Interaction) opens the map while you fly and closes it again, never over another menu.
@@ -114,6 +118,7 @@ Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first l
 | `[Interaction]` | `Interact Key` | `E` | Match your game's interact key |
 | `[Interaction]` | `Map In Drone Mode` | `true` | Map from the drone |
 | `[Interaction]` | `Map Key` | `M` | Match your game's map key |
+| `[Interaction]` | `Esc Opens Pause Menu In Drone Mode` | `false` | Esc opens the pause menu in the drone instead of recalling it |
 | `[Interaction]` | `Drone Reveals Map` | `false` | Flying uncovers the map |
 | `[Controls]` | `Toggle Key` | `F10` | Panel (BetterCheats' default too) |
 | `[Controls]` | `Boost Key` | `Sprint` | Held to boost; `Sprint` follows your Sprint key |
