@@ -48,10 +48,11 @@ namespace
     bool                    g_missLogged      = false;
 
     // The wheel callback runs inside the window's message pump, so it only
-    // queues the delta and OnTick makes the game calls. g_inDrone is the tick's last answer, so the
-    // callback can pass a notch on when the drone is not out without touching
-    // the game's objects.
-    std::atomic<bool>    g_inDrone{ false };
+    // queues the delta and OnTick makes the game calls. g_canSwitch is the
+    // tick's last answer to "the drone is out and the page switch is found", so
+    // the callback passes a notch on when the switch cannot run, without
+    // touching the game's objects.
+    std::atomic<bool>    g_canSwitch{ false };
     std::atomic<int32_t> g_pendingRawDelta{ 0 };
 
     // Most page switches made in one tick; a flick beyond a full lap of the
@@ -119,7 +120,7 @@ namespace
 
         auto* subsystem = static_cast<SDK::UObject*>(SDK::USubsystemBlueprintLibrary::GetLocalPlayerSubsystem(
             pc, static_cast<SDK::UClass*>(g_subsystemClass.Get())));
-        const uint8_t*         active  = DroneFields::ActiveHotbarIndex.In(subsystem);
+        const uint8_t*         active  = DroneFields::CurrentHotbarIndex.In(subsystem);
         const HotbarArrayData* hotbars = DroneFields::Hotbars.In(subsystem);
         if (!active || !hotbars || hotbars->Num <= 0)
             return false;
@@ -133,6 +134,7 @@ namespace
         else
             page = current != 0 ? current - 1 : (std::min)(kMaxPageIndex, last);
 
+        page = (std::min)(page, last);
         subsystem->ProcessEvent(g_setActiveHotbar, &page);
         return true;
     }
@@ -147,7 +149,7 @@ namespace
         // a menu open on the game's layer owns the wheel.
         if (event->uiCapturing || event->rawDelta == 0 || event->rawDeltaH != 0
             || (event->modifiers & PluginWheelMod_Ctrl) == 0
-            || !g_inDrone.load(std::memory_order_relaxed) || IsGameMenuOpen())
+            || !g_canSwitch.load(std::memory_order_relaxed) || IsGameMenuOpen())
             return false;
 
         // Consumed: neither the game nor a wheel handler registered after this
@@ -159,7 +161,7 @@ namespace
     void OnTick(float deltaTime)
     {
         const bool inDrone = IsLocalPlayerInDrone();
-        g_inDrone.store(inDrone, std::memory_order_relaxed);
+        g_canSwitch.store(inDrone && ResolvePageSwitch(), std::memory_order_relaxed);
 
         const int32_t raw = g_pendingRawDelta.exchange(0, std::memory_order_relaxed);
         if (!inDrone)
@@ -226,7 +228,7 @@ void ShutdownDroneHotbar(IPluginSelf* self)
         self->hooks->Input->UnregisterMouseWheel(&OnMouseWheel, nullptr);
     self->hooks->Engine->UnregisterOnTick(OnTick);
 
-    g_inDrone.store(false, std::memory_order_relaxed);
+    g_canSwitch.store(false, std::memory_order_relaxed);
     g_pendingRawDelta.store(0, std::memory_order_relaxed);
     g_rawRemainder = 0;
     g_remainderAge = 0.0f;

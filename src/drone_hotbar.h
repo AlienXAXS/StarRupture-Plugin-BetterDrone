@@ -7,6 +7,6 @@
 // call. Only the wheel is taken here; Ctrl itself still reaches the game.
 
 // Start and stop listening for the wheel. Call from PluginInit and
-// PluginShutdown when DroneFields::Features::HotbarCycle is on.
+// PluginShutdown when DroneFields::Features::HotbarPage is on.
 bool InitDroneHotbar(IPluginSelf* self);
 void ShutdownDroneHotbar(IPluginSelf* self);

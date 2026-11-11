@@ -108,11 +108,10 @@ namespace DroneFields
 	// The hotbar pages of the local player's UCrHotbarLocalPlayerSubsystem, which
 	// only game builds with hotbar pages have. Neither member is in the
 	// Game-SDK, so both are native: the loader's row for the running build, or
-	// the page switch is off. The offsets are those of CL-129402 (the active
-	// page is a byte at +0x48, the pages an array at +0x38 whose Num is at
-	// +0x40).
-	inline auto ActiveHotbarIndex = PluginField<uint8_t>{ { "UCrHotbarLocalPlayerSubsystem::ActiveHotbarIndex",
-		"UCrHotbarLocalPlayerSubsystem", "ActiveHotbarIndex", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0x48 } };
+	// the page switch is off. The current page is a byte at +0x48, the pages an
+	// array at +0x38 whose Num is at +0x40.
+	inline auto CurrentHotbarIndex = PluginField<uint8_t>{ { "UCrHotbarLocalPlayerSubsystem::CurrentHotbarIndex",
+		"UCrHotbarLocalPlayerSubsystem", "CurrentHotbarIndex", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0x48 } };
 	inline auto Hotbars = PluginField<HotbarArrayData>{ { "UCrHotbarLocalPlayerSubsystem::Hotbars",
 		"UCrHotbarLocalPlayerSubsystem", "Hotbars", PLUGIN_FIELD_NATIVE, sizeof(HotbarArrayData), 0x38 } };
 
@@ -244,7 +243,7 @@ namespace DroneFields
 			WeakSpotResource, InventorySlots, SlotItemId, ItemIdHandle, OreMappingData, PhysMatOreDataMap,
 			MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
 			MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint, MapAreaMatrix,
-			ActiveHotbarIndex, Hotbars,
+			CurrentHotbarIndex, Hotbars,
 			MarkerColorData, MarkerPlayerColour,
 			HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM,
 			HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM,
@@ -341,8 +340,8 @@ namespace DroneFields
 		// Ctrl and the mouse wheel switch the hotbar page in the drone, through
 		// the game's own SetActiveHotbar. A part of its own: a game build without
 		// hotbar pages, or without the loader's rows for them, loses only this.
-		inline PluginMap::Feature HotbarCycle{ "hotbar-page", "Ctrl + mouse wheel switches the hotbar page in the drone",
-			PluginMap::KeysOf(ActiveHotbarIndex, Hotbars),
+		inline PluginMap::Feature HotbarPage{ "hotbar-page", "Ctrl + mouse wheel switches the hotbar page in the drone",
+			PluginMap::KeysOf(CurrentHotbarIndex, Hotbars),
 			{} };
 
 		inline PluginMap::Feature MapOpen{ "drone-map", "Open the map from the drone",
@@ -375,7 +374,7 @@ namespace DroneFields
 		{
 			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, MapFollow, Limits, SprintKey,
 				Announcer,
-				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarCycle, MapOpen, BuildMenu, Speedometer, SpeedometerHeight, Audio);
+				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarPage, MapOpen, BuildMenu, Speedometer, SpeedometerHeight, Audio);
 		}
 	}
 
