@@ -1,47 +1,51 @@
 #include "drone_hotbar.h"
 #include "drone_fields.h"
 #include "drone_interact.h"
+#include "object_ref.h"
 #include "plugin_helpers.h"
 #include <Chimera_classes.hpp>
 #include <Engine_classes.hpp>
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 
 namespace
 {
-    // ACrCharacterPlayerBase::NativeOnCycleWeapon(character, direction): the
-    // call the game's next-weapon and previous-weapon inputs make, 0 for next
-    // and 1 for previous. Not reflected. Called by this plugin, never hooked.
-    // Null means the key is missing on this build, which turns off only the
-    // hotbar (DroneFields::Features::HotbarCycle).
-    using CycleWeapon_t = void (*)(SDK::ACrCharacterPlayerBase*, uint8_t);
+    // The game's hotbar-page system (UCrHotbarLocalPlayerSubsystem) is found by
+    // name, not through the Game-SDK: a game build without hotbar pages has no
+    // such class, and the page switch is then off. The game's own Next and
+    // Previous page inputs read the subsystem's active page and page count and
+    // call its reflected SetActiveHotbar(int32) with the new page; this plugin
+    // does the same, so a page changes exactly as it does on foot. It never
+    // calls ActivateItemOnHotbarByIndex: activating a weapon slot would equip
+    // the weapon and end the drone.
+    constexpr const char* kSubsystemClass  = "CrHotbarLocalPlayerSubsystem";
+    constexpr const char* kSetActiveHotbar = "SetActiveHotbar";
 
-    CycleWeapon_t g_cycleWeapon = nullptr;
-
-    // The start of the next-weapon input handler's InputPressed: it checks the
-    // pawn is a player character, then calls the cycle with direction 0
-    // (xor edx, edx). The byte at kCycleWeaponCallAt is that call's E8; the
-    // loader follows it to the cycle function. The call's target and the
-    // handler's first call are wildcarded, so the same bytes match on every
-    // game build, where the cycle function itself starts differently.
-    constexpr const char* kCycleWeaponPattern =
-        "4D 85 C0 74 ?? 53 48 83 EC 20 49 8B D8 E8 ?? ?? ?? ?? 48 8B 53 10 4C 8D 40 30 "
-        "48 63 40 38 3B 42 38 7F ?? 48 8B C8 48 8B 42 30 4C 39 04 C8 75 ?? 33 D2 48 8B CB "
-        "E8 ?? ?? ?? ??";
-    constexpr int32_t kCycleWeaponCallAt = 53;
-
-    // The directions the game's inputs pass to the cycle.
-    constexpr uint8_t kCycleNext     = 0;
-    constexpr uint8_t kCyclePrevious = 1;
+    // The game wraps Previous from the first page to the last one, and never
+    // past page index 9.
+    constexpr int32_t kMaxPageIndex = 9;
 
     // One wheel notch, as the message reports it (WHEEL_DELTA).
     constexpr int32_t kRawPerNotch = 120;
 
-    // Wheel forward (away from the user) is the previous slot and wheel back
-    // the next, the order most PC games use. The game's own binding is not read.
-    constexpr uint8_t kForwardCycle = kCyclePrevious;
-    constexpr uint8_t kBackCycle    = kCycleNext;
+    // Wheel forward (away from the user) is the next page and wheel back the
+    // previous one, the direction of the game's own plain wheel (forward is the
+    // next weapon). The game's binding for its page inputs is in its data and
+    // is not read.
+    constexpr bool kForwardIsNext = true;
+
+    // A lookup that misses is repeated this often at the earliest, since it
+    // scans the game's objects.
+    constexpr uint64_t kLookupRetryMs = 5000;
+
+    // The subsystem's class and its SetActiveHotbar, set together. Tick only.
+    ObjectRef<SDK::UObject> g_subsystemClass;
+    SDK::UFunction*         g_setActiveHotbar = nullptr;
+    uint64_t                g_nextLookupMs    = 0;
+    bool                    g_missLogged      = false;
 
     // The wheel callback runs inside the window's message pump, so it only
     // queues the delta and OnTick makes the game calls. g_inDrone is the tick's last answer, so the
@@ -50,9 +54,9 @@ namespace
     std::atomic<bool>    g_inDrone{ false };
     std::atomic<int32_t> g_pendingRawDelta{ 0 };
 
-    // Most cycle calls made in one tick; a flick beyond a full turn of the
-    // hotbar only wraps around.
-    constexpr int32_t kMaxCyclesPerTick = 9;
+    // Most page switches made in one tick; a flick beyond a full lap of the
+    // pages only wraps around.
+    constexpr int32_t kMaxSwitchesPerTick = kMaxPageIndex + 1;
 
     // A part-notch is dropped after this long without wheel input.
     constexpr float kRemainderTimeout = 0.5f;
@@ -61,6 +65,77 @@ namespace
     // Tick only.
     int32_t g_rawRemainder = 0;
     float   g_remainderAge = 0.0f;
+
+    // Finds the subsystem's class and its SetActiveHotbar. False while either is
+    // not there, which stays so on a game build without hotbar pages.
+    bool ResolvePageSwitch()
+    {
+        if (g_subsystemClass.Get() && g_setActiveHotbar)
+            return true;
+
+        g_subsystemClass.Reset();
+        g_setActiveHotbar = nullptr;
+
+        const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        if (now < g_nextLookupMs)
+            return false;
+        g_nextLookupMs = now + kLookupRetryMs;
+
+        IPluginSelf* self = GetSelf();
+        IPluginObjectWalker* walker = self && self->hooks ? self->hooks->ObjectWalker : nullptr;
+        if (!walker || !walker->IsReady())
+            return false;
+
+        auto* object = static_cast<SDK::UObject*>(walker->FindFirstObjectByName(kSubsystemClass));
+        SDK::UFunction* function = nullptr;
+        if (object && object->IsA(SDK::UClass::StaticClass())
+            && static_cast<SDK::UClass*>(object)->IsSubclassOf(SDK::ULocalPlayerSubsystem::StaticClass()))
+            function = static_cast<SDK::UClass*>(object)->GetFunction(kSubsystemClass, kSetActiveHotbar);
+
+        // One int32 in, nothing returned.
+        if (!function || function->Size != static_cast<int32_t>(sizeof(int32_t)))
+        {
+            if (!g_missLogged)
+            {
+                LOG_WARN("DroneHotbar: no %s::%s(int32) in this game -- Ctrl + wheel will not switch the hotbar page",
+                    kSubsystemClass, kSetActiveHotbar);
+                g_missLogged = true;
+            }
+            return false;
+        }
+
+        g_subsystemClass.Set(object);
+        g_setActiveHotbar = function;
+        return true;
+    }
+
+    // Moves the local player to the next or previous hotbar page the way the
+    // game's own page inputs do. False when nothing was called.
+    bool SwitchPage(SDK::ACrPlayerControllerBase* pc, bool next)
+    {
+        if (!ResolvePageSwitch())
+            return false;
+
+        auto* subsystem = static_cast<SDK::UObject*>(SDK::USubsystemBlueprintLibrary::GetLocalPlayerSubsystem(
+            pc, static_cast<SDK::UClass*>(g_subsystemClass.Get())));
+        const uint8_t*         active  = DroneFields::ActiveHotbarIndex.In(subsystem);
+        const HotbarArrayData* hotbars = DroneFields::Hotbars.In(subsystem);
+        if (!active || !hotbars || hotbars->Num <= 0)
+            return false;
+
+        const int32_t current = *active;
+        const int32_t last    = hotbars->Num - 1;
+
+        int32_t page = 0;
+        if (next)
+            page = current >= last ? 0 : current + 1;
+        else
+            page = current != 0 ? current - 1 : (std::min)(kMaxPageIndex, last);
+
+        subsystem->ProcessEvent(g_setActiveHotbar, &page);
+        return true;
+    }
 
     bool OnMouseWheel(const PluginMouseWheelEvent* event, void*)
     {
@@ -110,40 +185,35 @@ namespace
             return;
         }
 
-        for (int32_t cycles = 0; cycles < kMaxCyclesPerTick && std::abs(g_rawRemainder) >= kRawPerNotch; ++cycles)
+        for (int32_t switches = 0; switches < kMaxSwitchesPerTick && std::abs(g_rawRemainder) >= kRawPerNotch; ++switches)
         {
             const bool forward = g_rawRemainder > 0;
             g_rawRemainder += forward ? -kRawPerNotch : kRawPerNotch;
 
-            const uint8_t direction = forward ? kForwardCycle : kBackCycle;
-            g_cycleWeapon(character, direction);
+            // A page that is not there (no subsystem yet, no pages) drops the
+            // rest of the flick instead of retrying it on every notch.
+            if (!SwitchPage(pc, forward == kForwardIsNext))
+            {
+                g_rawRemainder = 0;
+                break;
+            }
         }
     }
-}
-
-void ResolveDroneHotbar(IPluginSelf* self, IPluginHookScanner* scanner)
-{
-    if (!self || !scanner)
-        return;
-
-    g_cycleWeapon = PluginMap::FunctionAs<CycleWeapon_t>(scanner, self, DroneFields::Keys::CycleWeapon,
-        PLUGIN_MAP_PATTERN(kCycleWeaponPattern), PLUGIN_SCAN_FUNCTION_START,
-        PLUGIN_SCAN_FLAG_OPTIONAL | PLUGIN_SCAN_FLAG_FOLLOW_REL32, 0, kCycleWeaponCallAt);
 }
 
 bool InitDroneHotbar(IPluginSelf* self)
 {
     auto* input = self ? self->hooks->Input : nullptr;
-    if (!g_cycleWeapon || !input || !input->RegisterMouseWheel)
+    if (!input || !input->RegisterMouseWheel)
     {
-        LOG_WARN("DroneHotbar: no weapon-cycle call or mouse wheel input -- Ctrl + wheel will not change the hotbar");
+        LOG_WARN("DroneHotbar: no mouse wheel input -- Ctrl + wheel will not switch the hotbar page");
         return false;
     }
 
     input->RegisterMouseWheel(&OnMouseWheel, nullptr);
     self->hooks->Engine->RegisterOnTick(OnTick);
 
-    LOG_INFO("DroneHotbar: Ctrl + mouse wheel changes the hotbar in drone mode");
+    LOG_INFO("DroneHotbar: Ctrl + mouse wheel switches the hotbar page in drone mode");
     return true;
 }
 
@@ -160,4 +230,8 @@ void ShutdownDroneHotbar(IPluginSelf* self)
     g_pendingRawDelta.store(0, std::memory_order_relaxed);
     g_rawRemainder = 0;
     g_remainderAge = 0.0f;
+    g_subsystemClass.Reset();
+    g_setActiveHotbar = nullptr;
+    g_nextLookupMs = 0;
+    g_missLogged = false;
 }

@@ -185,7 +185,6 @@ extern "C" __declspec(dllexport) void OnPluginLoadHooks(IPluginSelf* self, IPlug
     ResolveDroneFog(self, scanner);
     ResolveDroneBuildMenu(self, scanner);
     ResolveDroneLaser(self, scanner);
-    ResolveDroneHotbar(self, scanner);
     DroneFields::Resolve(self, scanner);
 }
 
