@@ -60,6 +60,9 @@ Hold the game's context interact key (**E** by default, rebinds included) on a b
 ### Hotbar page from the drone <sup>[✦](#msantoro12)</sup>
 
 Hold **Ctrl** and scroll the mouse wheel while the drone is out to switch your hotbar page, one page per notch, as Ctrl and the wheel do on foot. It changes the page only, never the slot or the tool in your hand, so the drone stays out. It needs a game version that has hotbar pages; on an older one Ctrl and the wheel are left to the game. The wheel is taken only while you fly, so Ctrl and the wheel work as before on foot, with a menu open or with a loader window open. Only the wheel is taken, so Ctrl itself still reaches the game and any key bound to it. Ctrl is also the default Slow key, so the drone slows while you scroll; rebind Slow Key on the Config page if you prefer. A mod that also uses Ctrl and the wheel, such as a minimap zoom, loses those notches while the drone is out if BetterDrone loads before it.
+### Esc opens the pause menu <sup>[✦](#msantoro12)</sup>
+
+Turn on `Esc Opens Pause Menu In Drone Mode` (off by default) and **Esc** in the drone opens the game's pause menu, and pauses as it does on foot, instead of recalling the drone. When the menu closes you are still in the drone, in the same spot. **Q** still recalls the drone, on or off. Esc while you are placing a building still leaves the drone as before. Keyboard Esc only.
 
 ### The map from the drone <sup>[✦](#msantoro12)</sup>
 
@@ -119,6 +122,7 @@ Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first l
 | `[Interaction]` | `Map In Drone Mode` | `true` | Map from the drone |
 | `[Interaction]` | `Map Key` | `M` | Match your game's map key |
 | `[Interaction]` | `Map Centre Key` | `C` | Match your game's Center on player key |
+| `[Interaction]` | `Esc Opens Pause Menu In Drone Mode` | `false` | Esc opens the pause menu in the drone instead of recalling it |
 | `[Interaction]` | `Drone Reveals Map` | `false` | Flying uncovers the map |
 | `[Controls]` | `Toggle Key` | `F10` | Panel (BetterCheats' default too) |
 | `[Controls]` | `Boost Key` | `Sprint` | Held to boost; `Sprint` follows your Sprint key |
