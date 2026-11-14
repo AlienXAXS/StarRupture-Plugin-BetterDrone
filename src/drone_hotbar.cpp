@@ -94,12 +94,14 @@ namespace
         }
     };
 
+    uint64_t NowMs()
+    {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
     bool g_pageOn   = false;
     bool g_selectOn = false;
-
-    // The wheel pick on foot is on while the slot picking is, until the game's
-    // control states are found missing by name. Tick only.
-    bool g_footOn = false;
 
     // ECrPlayerControlState values, read by name from the game's own UEnum.
     uint8_t g_controlBuilding    = 0;
@@ -126,6 +128,13 @@ namespace
     // The slot a digit asked for (0 to 9), or -1. Written by the key callback.
     std::atomic<int32_t> g_pendingSlot{ -1 };
 
+    // The same digit on foot, where the game picks the slot itself: the last
+    // digit pressed and when, so the wheel steps on from the slot the game
+    // picked. The bind does not consume the key. Stale after a second.
+    std::atomic<int32_t>  g_footSlot{ -1 };
+    std::atomic<uint64_t> g_footSlotMs{ 0 };
+    constexpr uint64_t    kFootSlotFreshMs = 1000;
+
     // The game has no "current slot" member, so this is the last slot this plugin
     // picked, on the page it picked it on, or -1. Tick only.
     int32_t g_lastSlot = -1;
@@ -151,8 +160,7 @@ namespace
         g_setActiveHotbar = nullptr;
         g_activateItem    = nullptr;
 
-        const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+        const uint64_t now = NowMs();
         if (now < g_nextLookupMs)
             return false;
         g_nextLookupMs = now + kLookupRetryMs;
@@ -321,19 +329,15 @@ namespace
             return resolved;
 
         tried = true;
-        int64_t building = 0, deconstruct = 0;
-        if (PluginMap::EnumValue("ECrPlayerControlState", "BuildingMode", building) != PluginMap::EnumLookup::Found
-            || PluginMap::EnumValue("ECrPlayerControlState", "DeconstructMode", deconstruct) != PluginMap::EnumLookup::Found
-            || building < 0 || building > UINT8_MAX || deconstruct < 0 || deconstruct > UINT8_MAX)
+        if (!DroneFields::ControlStateValue("BuildingMode", g_controlBuilding)
+            || !DroneFields::ControlStateValue("DeconstructMode", g_controlDeconstruct))
         {
             LOG_INFO("DroneHotbar: ECrPlayerControlState BuildingMode/DeconstructMode not found on this build "
                      "-- the wheel does not pick a hotbar slot on foot");
             return false;
         }
 
-        g_controlBuilding    = static_cast<uint8_t>(building);
-        g_controlDeconstruct = static_cast<uint8_t>(deconstruct);
-        resolved             = true;
+        resolved = true;
         return true;
     }
 
@@ -364,8 +368,11 @@ namespace
 
     void OnDigitKey(EModKey key, EModKeyEvent event)
     {
-        if (event == EModKeyEvent::Pressed)
-            g_pendingSlot.store(SlotOfKey(key), std::memory_order_relaxed);
+        if (event != EModKeyEvent::Pressed)
+            return;
+        g_pendingSlot.store(SlotOfKey(key), std::memory_order_relaxed);
+        g_footSlot.store(SlotOfKey(key), std::memory_order_relaxed);
+        g_footSlotMs.store(NowMs(), std::memory_order_relaxed);
     }
 
     bool OnMouseWheel(const PluginMouseWheelEvent* event, void*)
@@ -414,7 +421,7 @@ namespace
     {
         // The drone, or on foot with the building tool out (the wheel pick only).
         const bool inDrone = IsLocalPlayerInDrone();
-        SDK::ACrPlayerControllerBase* pc = inDrone || g_footOn ? LocalPlayerController() : nullptr;
+        SDK::ACrPlayerControllerBase* pc = inDrone || g_selectOn ? LocalPlayerController() : nullptr;
         const bool onFoot  = !inDrone && InPickMode(pc);
         const bool found   = (inDrone || onFoot) && ResolveSubsystem();
 
@@ -479,10 +486,22 @@ namespace
         g_canSelect.store(inDrone && anyBuilding, std::memory_order_relaxed);
         g_canSelectFoot.store(onFoot && anyBuilding, std::memory_order_relaxed);
 
-        // The number keys are the game's own on foot.
+        // The number keys are the game's own on foot, so the game has picked the
+        // slot already: only note it, so the wheel steps on from it. (A click on
+        // the hotbar with the mouse cannot be seen.)
         const int32_t digit = g_pendingSlot.exchange(-1, std::memory_order_relaxed);
+        const int32_t footDigit = g_footSlot.exchange(-1, std::memory_order_relaxed);
+        if (onFoot && footDigit >= 0 && footDigit < kSlotsPerPage
+            && NowMs() - g_footSlotMs.load(std::memory_order_relaxed) < kFootSlotFreshMs
+            && IsBuildingSlot(page, footDigit))
+            g_lastSlot = footDigit;
         if (inDrone && digit >= 0 && digit < kSlotsPerPage)
+        {
+            // The page's slots are not read again after a game call.
             PickBuildingSlot(subsystem, page, digit);
+            g_slotWheel.Reset();
+            return;
+        }
 
         // The notches of a flick walk to the slot they end on; only that one is
         // picked, so one flick is one call.
@@ -511,7 +530,6 @@ bool InitDroneHotbar(IPluginSelf* self, bool page, bool select)
 
     g_pageOn   = page;
     g_selectOn = select;
-    g_footOn   = select;
 
     input->RegisterMouseWheel(&OnMouseWheel, nullptr);
     if (select)
@@ -547,6 +565,7 @@ void ShutdownDroneHotbar(IPluginSelf* self)
     g_canSelect.store(false, std::memory_order_relaxed);
     g_canSelectFoot.store(false, std::memory_order_relaxed);
     ResetState();
+    g_footSlot.store(-1, std::memory_order_relaxed);
     g_subsystemClass.Reset();
     g_setActiveHotbar = nullptr;
     g_activateItem    = nullptr;
@@ -554,5 +573,4 @@ void ShutdownDroneHotbar(IPluginSelf* self)
     g_missLogged      = false;
     g_pageOn          = false;
     g_selectOn        = false;
-    g_footOn          = false;
 }

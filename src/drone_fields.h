@@ -79,6 +79,19 @@ namespace DroneFields
 		"ACrPlayerControllerBase", "PlayerControlState", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0xE88 } };
 	inline auto BuildingMenuPlayer = DRONE_FIELD(UCrUW_BuildingMenu, Player);
 
+	// A value of ECrPlayerControlState by entry name, read from the game's own
+	// UEnum: the numbers can move in an update, the names are what the game
+	// saves. False when the enum or the entry is not on this build.
+	inline bool ControlStateValue(const char* name, uint8_t& out)
+	{
+		int64_t value = 0;
+		if (PluginMap::EnumValue("ECrPlayerControlState", name, value) != PluginMap::EnumLookup::Found
+			|| value < 0 || value > UINT8_MAX)
+			return false;
+		out = static_cast<uint8_t>(value);
+		return true;
+	}
+
 	// The building being placed: the controller's building component, and the
 	// helper actor it holds while a building is in hand.
 	inline auto ControllerBuilding = DRONE_FIELD(ACrPlayerControllerBase, BuildingComponent);

@@ -42,22 +42,17 @@ namespace
             return resolved;
 
         tried = true;
-        int64_t normal = 0, deconstruct = 0;
-        const PluginMap::EnumLookup n = PluginMap::EnumValue("ECrPlayerControlState", "Normal", normal);
-        const PluginMap::EnumLookup d = PluginMap::EnumValue("ECrPlayerControlState", "DeconstructMode", deconstruct);
-        if (n != PluginMap::EnumLookup::Found || d != PluginMap::EnumLookup::Found
-            || normal < 0 || normal > UINT8_MAX || deconstruct < 0 || deconstruct > UINT8_MAX)
+        if (!DroneFields::ControlStateValue("Normal", g_controlStateNormal)
+            || !DroneFields::ControlStateValue("DeconstructMode", g_controlStateDeconstructMode))
         {
             LOG_WARN("DroneInteract: ECrPlayerControlState Normal/DeconstructMode not found on this build "
                      "-- building interaction in drone mode is off");
             return false;
         }
 
-        g_controlStateNormal          = static_cast<uint8_t>(normal);
-        g_controlStateDeconstructMode = static_cast<uint8_t>(deconstruct);
-        resolved                      = true;
+        resolved = true;
         LOG_INFO("DroneInteract: ECrPlayerControlState Normal=%d DeconstructMode=%d",
-                 static_cast<int>(normal), static_cast<int>(deconstruct));
+                 static_cast<int>(g_controlStateNormal), static_cast<int>(g_controlStateDeconstructMode));
         return true;
     }
 
@@ -1376,7 +1371,7 @@ bool InitDroneBuildMenu()
 
     g_placementCancelOn = DroneFields::Features::PlacementCancel.On() && g_canRestoreInitialState;
     if (!g_placementCancelOn)
-        LOG_WARN("DroneBuildMenu: no placement-cancel keys on this build -- cancelling a placement will still end drone mode");
+        LOG_INFO("DroneBuildMenu: no placement-cancel keys on this build -- cancelling a placement will still end drone mode");
     return true;
 }
 
