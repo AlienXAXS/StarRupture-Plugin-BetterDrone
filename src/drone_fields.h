@@ -32,8 +32,8 @@ struct MapAreaMatrixData
 	float m[4][4];
 };
 
-// The hotbar subsystem's pages: a native TArray (data pointer, Num, Max) of
-// 16-byte entries. Only Num is read, as the page count.
+// A native TArray header (data pointer, Num, Max): the hotbar subsystem's pages
+// (read for Num and the entries) and one page's slots.
 struct HotbarArrayData
 {
 	void*   Data;
@@ -119,6 +119,20 @@ namespace DroneFields
 		"UCrHotbarLocalPlayerSubsystem", "CurrentHotbarIndex", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0x48 } };
 	inline auto Hotbars = PluginField<HotbarArrayData>{ { "UCrHotbarLocalPlayerSubsystem::Hotbars",
 		"UCrHotbarLocalPlayerSubsystem", "Hotbars", PLUGIN_FIELD_NATIVE, sizeof(HotbarArrayData), 0x38 } };
+
+	// The slots of one hotbar page. The Game-SDK on a build without hotbar pages
+	// has none of these types, so they are plain specs, not SR_FIELD rows; the
+	// loader reads them off the game's reflection. A page is the entry of Hotbars
+	// at CurrentHotbarIndex, stepped by HotbarPageSize, and its slots are the
+	// SlotsArray at the start of it, stepped by HotbarSlotSize.
+	inline auto HotbarSlots    = PluginField<HotbarArrayData>{ { "FHotbarArray::SlotsArray",
+		"FHotbarArray", "SlotsArray", PLUGIN_FIELD_FLAG_NONE, sizeof(HotbarArrayData), 0 } };
+	inline auto HotbarSlotType = PluginField<uint8_t>{ { "FHotbarInternalSlotData::SlotType",
+		"FHotbarInternalSlotData", "SlotType", PLUGIN_FIELD_FLAG_NONE, sizeof(uint8_t), 0 } };
+	inline auto HotbarPageSize = PluginFieldSpec{ "FHotbarArray", "FHotbarArray", nullptr,
+		PLUGIN_FIELD_FLAG_NONE, 0x10, -1 };
+	inline auto HotbarSlotSize = PluginFieldSpec{ "FHotbarInternalSlotData", "FHotbarInternalSlotData", nullptr,
+		PLUGIN_FIELD_FLAG_NONE, 0x60, -1 };
 
 	// Drone settings and the map's fog of war
 	inline auto SpeedPerSec   = DRONE_FIELD(UAuActorPlacementDeveloperSettings, BuildingDroneSpeedPerSec);
@@ -248,12 +262,21 @@ namespace DroneFields
 			WeakSpotResource, InventorySlots, SlotItemId, ItemIdHandle, OreMappingData, PhysMatOreDataMap,
 			MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
 			MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint, MapAreaMatrix,
-			CurrentHotbarIndex, Hotbars,
+			CurrentHotbarIndex, Hotbars, HotbarSlots, HotbarSlotType,
 			MarkerColorData, MarkerPlayerColour,
 			HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM,
 			HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM,
 			NativeInputActionSize, InventorySlotSize, WeakSpotSize, MarkerItemSize, MarkerRepresentationSize,
 			VeinDataSize) && toWorld;
+	}
+
+	// The two struct sizes of the hotbar slots, asked for only once the members
+	// resolved: a build without hotbar pages then turns the feature off with no
+	// warning of its own. Call after Resolve.
+	inline void ResolveHotbarSizes(IPluginSelf* self, IPluginHookScanner* scanner)
+	{
+		if (PluginMap::IsResolved(HotbarSlots) && PluginMap::IsResolved(HotbarSlotType))
+			PluginMap::ResolveFields(scanner, self, HotbarPageSize, HotbarSlotSize);
 	}
 
 	// The map keys of the game functions BetterDrone resolves, so the resolves
@@ -351,6 +374,15 @@ namespace DroneFields
 			PluginMap::KeysOf(CurrentHotbarIndex, Hotbars),
 			{} };
 
+		// The number keys and the plain mouse wheel pick a building slot of the
+		// current hotbar page in the drone, through the game's own
+		// ActivateItemOnHotbarByIndex. Needs the slot rows below as well as the page
+		// ones; a game build without hotbar pages loses only this and the page
+		// switch.
+		inline PluginMap::Feature HotbarSelect{ "hotbar-select", "Number keys and the mouse wheel pick a building in the drone",
+			PluginMap::KeysOf(CurrentHotbarIndex, Hotbars, HotbarSlots, HotbarSlotType, HotbarPageSize, HotbarSlotSize),
+			{} };
+
 		inline PluginMap::Feature MapOpen{ "drone-map", "Open the map from the drone",
 			PluginMap::KeysOf(Keys::MapMenu),
 			{ "Interaction.Map In Drone Mode", "Interaction.Map Key" } };
@@ -396,7 +428,7 @@ namespace DroneFields
 		{
 			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, MapFollow, Limits, SprintKey,
 				Announcer,
-				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarPage, MapOpen, BuildMenu, PlacementCancel, EscPause, Speedometer, SpeedometerHeight, Audio);
+				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarPage, HotbarSelect, MapOpen, BuildMenu, PlacementCancel, EscPause, Speedometer, SpeedometerHeight, Audio);
 		}
 	}
 
