@@ -35,6 +35,12 @@ namespace
     // past page index 9.
     constexpr int32_t kMaxPageIndex = 9;
 
+    // The modifier that makes the wheel pick a slot on foot in build or deconstruct
+    // mode. None is the plain wheel, which replaces the game's building height and
+    // spline tangent wheel actions there; PluginWheelMod_Alt moves the pick to
+    // Alt + wheel and leaves them alone. The drone always uses the plain wheel.
+    constexpr uint32_t kOnFootWheelModifier = PluginWheelMod_None;
+
     // A page has ten slots: the digits 1 to 9, then 0.
     constexpr int32_t kSlotsPerPage = 10;
 
@@ -91,6 +97,14 @@ namespace
     bool g_pageOn   = false;
     bool g_selectOn = false;
 
+    // The wheel pick on foot is on while the slot picking is, until the game's
+    // control states are found missing by name. Tick only.
+    bool g_footOn = false;
+
+    // ECrPlayerControlState values, read by name from the game's own UEnum.
+    uint8_t g_controlBuilding    = 0;
+    uint8_t g_controlDeconstruct = 0;
+
     // The subsystem's class and its functions. Tick only.
     ObjectRef<SDK::UObject> g_subsystemClass;
     SDK::UFunction*         g_setActiveHotbar = nullptr;
@@ -104,7 +118,8 @@ namespace
     // run", so the callback passes a notch on when it cannot, without touching
     // the game's objects.
     std::atomic<bool> g_canPage{ false };
-    std::atomic<bool> g_canSelect{ false };
+    std::atomic<bool> g_canSelect{ false };     // in the drone, plain wheel
+    std::atomic<bool> g_canSelectFoot{ false }; // on foot in build or deconstruct mode
     WheelNotches      g_pageWheel;
     WheelNotches      g_slotWheel;
 
@@ -295,6 +310,52 @@ namespace
         return true;
     }
 
+    // Looks up the control states of build and deconstruct mode the first time
+    // the on-foot pick needs them. False when the enum or an entry is not on this
+    // build: the on-foot pick stays off, quietly, and the drone part is unaffected.
+    bool ControlStatesResolved()
+    {
+        static bool tried    = false;
+        static bool resolved = false;
+        if (tried)
+            return resolved;
+
+        tried = true;
+        int64_t building = 0, deconstruct = 0;
+        if (PluginMap::EnumValue("ECrPlayerControlState", "BuildingMode", building) != PluginMap::EnumLookup::Found
+            || PluginMap::EnumValue("ECrPlayerControlState", "DeconstructMode", deconstruct) != PluginMap::EnumLookup::Found
+            || building < 0 || building > UINT8_MAX || deconstruct < 0 || deconstruct > UINT8_MAX)
+        {
+            LOG_INFO("DroneHotbar: ECrPlayerControlState BuildingMode/DeconstructMode not found on this build "
+                     "-- the wheel does not pick a hotbar slot on foot");
+            return false;
+        }
+
+        g_controlBuilding    = static_cast<uint8_t>(building);
+        g_controlDeconstruct = static_cast<uint8_t>(deconstruct);
+        resolved             = true;
+        return true;
+    }
+
+    // True while the local player on foot has the building tool out: build mode
+    // or deconstruct mode. Tick only.
+    bool InPickMode(SDK::ACrPlayerControllerBase* pc)
+    {
+        if (!pc || !ControlStatesResolved())
+            return false;
+
+        const uint8_t* state = DroneFields::PlayerControlState.In(pc);
+        return state && (*state == g_controlBuilding || *state == g_controlDeconstruct);
+    }
+
+    // True when the wheel's modifiers are exactly `required`: none for the plain
+    // wheel, otherwise only that modifier (either side) held.
+    bool ModifiersAre(uint32_t held, uint32_t required)
+    {
+        return required == PluginWheelMod_None ? held == PluginWheelMod_None
+                                               : (held & required) != 0 && (held & ~required) == 0;
+    }
+
     // The slot a number key is: 1 to 9 are slots 0 to 8 and 0 is slot 9.
     int32_t SlotOfKey(EModKey key)
     {
@@ -318,9 +379,11 @@ namespace
         if (event->uiCapturing || event->rawDelta == 0 || event->rawDeltaH != 0 || IsGameMenuOpen())
             return false;
 
-        // Ctrl is the page, no modifier at all is the slot. A notch is consumed
-        // only when the tick can use it, so neither the game nor a wheel handler
-        // registered after this one (the minimap zoom) also sees it.
+        // Ctrl is the page, no modifier at all is the slot in the drone, and
+        // kOnFootWheelModifier is the slot on foot in build or deconstruct mode.
+        // A notch is consumed only when the tick can use it, so neither the game
+        // nor a wheel handler registered after this one (the minimap zoom) also
+        // sees it.
         if ((event->modifiers & PluginWheelMod_Ctrl) != 0)
         {
             if (!g_canPage.load(std::memory_order_relaxed))
@@ -329,7 +392,9 @@ namespace
             return true;
         }
 
-        if (event->modifiers != PluginWheelMod_None || !g_canSelect.load(std::memory_order_relaxed))
+        const bool pick = (ModifiersAre(event->modifiers, PluginWheelMod_None) && g_canSelect.load(std::memory_order_relaxed))
+            || (ModifiersAre(event->modifiers, kOnFootWheelModifier) && g_canSelectFoot.load(std::memory_order_relaxed));
+        if (!pick)
             return false;
         g_slotWheel.pending.fetch_add(event->rawDelta, std::memory_order_relaxed);
         return true;
@@ -347,28 +412,33 @@ namespace
 
     void OnTick(float deltaTime)
     {
+        // The drone, or on foot with the building tool out (the wheel pick only).
         const bool inDrone = IsLocalPlayerInDrone();
-        const bool found   = inDrone && ResolveSubsystem();
+        SDK::ACrPlayerControllerBase* pc = inDrone || g_footOn ? LocalPlayerController() : nullptr;
+        const bool onFoot  = !inDrone && InPickMode(pc);
+        const bool found   = (inDrone || onFoot) && ResolveSubsystem();
 
         // The same gates for both: the local character is alive and is the pawn
         // the player controls. The key callbacks are already held back by the
         // loader while a text field has focus.
-        SDK::ACrPlayerControllerBase* pc = found ? LocalPlayerController() : nullptr;
+        if (!found)
+            pc = nullptr;
         SDK::ACrCharacterPlayerBase* character = DroneFields::ValueOr(DroneFields::CrChar, pc);
         const bool ready = character && !DroneFields::Dead(character)
             && pc->Pawn == static_cast<SDK::APawn*>(character);
 
-        g_canPage.store(g_pageOn && ready, std::memory_order_relaxed);
+        g_canPage.store(g_pageOn && ready && inDrone, std::memory_order_relaxed);
         if (!ready)
         {
             g_canSelect.store(false, std::memory_order_relaxed);
+            g_canSelectFoot.store(false, std::memory_order_relaxed);
             ResetState();
             return;
         }
 
         SDK::UObject* subsystem = LocalSubsystem(pc);
 
-        if (g_pageOn)
+        if (g_pageOn && inDrone)
         {
             const int32_t notches = g_pageWheel.Take(deltaTime);
             for (int32_t steps = 0; steps < (std::min)(std::abs(notches), kMaxStepsPerTick); ++steps)
@@ -391,6 +461,7 @@ namespace
         if (!havePage)
         {
             g_canSelect.store(false, std::memory_order_relaxed);
+            g_canSelectFoot.store(false, std::memory_order_relaxed);
             g_slotWheel.Reset();
             g_pendingSlot.store(-1, std::memory_order_relaxed);
             return;
@@ -404,10 +475,13 @@ namespace
         }
 
         // The wheel is taken only on a page that has a building slot to go to.
-        g_canSelect.store(FindBuildingSlot(page, -1, true) >= 0, std::memory_order_relaxed);
+        const bool anyBuilding = FindBuildingSlot(page, -1, true) >= 0;
+        g_canSelect.store(inDrone && anyBuilding, std::memory_order_relaxed);
+        g_canSelectFoot.store(onFoot && anyBuilding, std::memory_order_relaxed);
 
+        // The number keys are the game's own on foot.
         const int32_t digit = g_pendingSlot.exchange(-1, std::memory_order_relaxed);
-        if (digit >= 0 && digit < kSlotsPerPage)
+        if (inDrone && digit >= 0 && digit < kSlotsPerPage)
             PickBuildingSlot(subsystem, page, digit);
 
         // The notches of a flick walk to the slot they end on; only that one is
@@ -437,6 +511,7 @@ bool InitDroneHotbar(IPluginSelf* self, bool page, bool select)
 
     g_pageOn   = page;
     g_selectOn = select;
+    g_footOn   = select;
 
     input->RegisterMouseWheel(&OnMouseWheel, nullptr);
     if (select)
@@ -449,7 +524,8 @@ bool InitDroneHotbar(IPluginSelf* self, bool page, bool select)
     if (page)
         LOG_INFO("DroneHotbar: Ctrl + mouse wheel switches the hotbar page in drone mode");
     if (select)
-        LOG_INFO("DroneHotbar: the number keys and the mouse wheel pick a building from the hotbar in drone mode");
+        LOG_INFO("DroneHotbar: the number keys and the mouse wheel pick a building from the hotbar in drone mode, "
+                 "and the wheel does on foot in build and deconstruct mode");
     return true;
 }
 
@@ -469,6 +545,7 @@ void ShutdownDroneHotbar(IPluginSelf* self)
 
     g_canPage.store(false, std::memory_order_relaxed);
     g_canSelect.store(false, std::memory_order_relaxed);
+    g_canSelectFoot.store(false, std::memory_order_relaxed);
     ResetState();
     g_subsystemClass.Reset();
     g_setActiveHotbar = nullptr;
@@ -477,4 +554,5 @@ void ShutdownDroneHotbar(IPluginSelf* self)
     g_missLogged      = false;
     g_pageOn          = false;
     g_selectOn        = false;
+    g_footOn          = false;
 }
