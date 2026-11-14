@@ -26,9 +26,10 @@ namespace
     constexpr const char* kSetActiveHotbar = "SetActiveHotbar";
     constexpr const char* kActivateItem    = "ActivateItemOnHotbarByIndex";
 
-    // The slot type of a building, by number: the game's enum runs empty,
-    // consumable, building, weapon.
-    constexpr uint8_t kSlotBuilding = 2;
+    // The slot type of a building: EHotbarInternalSlotType::Building, read by
+    // name from the game's own UEnum, since the numbers of a game enum can move in
+    // an update. Looked up once, on the tick.
+    uint8_t g_slotBuilding = 0;
 
     // The game wraps Previous from the first page to the last one, and never
     // past page index 9.
@@ -231,11 +232,36 @@ namespace
         return true;
     }
 
+    // Looks up the building slot type the first time it is needed. False when the
+    // enum or its entry is not on this build: the slot picking is then left off,
+    // since only this number keeps weapon and consumable slots out.
+    bool BuildingSlotTypeResolved()
+    {
+        static bool tried    = false;
+        static bool resolved = false;
+        if (tried)
+            return resolved;
+
+        tried = true;
+        int64_t value = 0;
+        if (PluginMap::EnumValue("EHotbarInternalSlotType", "Building", value) != PluginMap::EnumLookup::Found
+            || value < 0 || value > UINT8_MAX)
+        {
+            LOG_WARN("DroneHotbar: EHotbarInternalSlotType Building not found on this build "
+                     "-- the number keys and the wheel will not pick a slot in the drone");
+            return false;
+        }
+
+        g_slotBuilding = static_cast<uint8_t>(value);
+        resolved       = true;
+        return true;
+    }
+
     bool IsBuildingSlot(const PageSlots& page, int32_t index)
     {
         const uint8_t* slot = PluginMap::ElementAt(page.slots, page.count, index, DroneFields::HotbarSlotSize);
         const uint8_t* type = DroneFields::HotbarSlotType.In(static_cast<const void*>(slot));
-        return type && *type == kSlotBuilding;
+        return type && *type == g_slotBuilding;
     }
 
     // The building slot after (or before) `from`, wrapping around the page; -1
@@ -360,7 +386,8 @@ namespace
         // Read after the page switch above, so a slot is picked on the page the
         // player now sees.
         PageSlots page;
-        const bool havePage = g_selectOn && !IsGameMenuOpen() && ReadPage(subsystem, page);
+        const bool havePage = g_selectOn && !IsGameMenuOpen() && BuildingSlotTypeResolved()
+            && ReadPage(subsystem, page);
         if (!havePage)
         {
             g_canSelect.store(false, std::memory_order_relaxed);
@@ -376,20 +403,26 @@ namespace
             g_lastSlot = -1;
         }
 
+        // The wheel is taken only on a page that has a building slot to go to.
+        g_canSelect.store(FindBuildingSlot(page, -1, true) >= 0, std::memory_order_relaxed);
+
         const int32_t digit = g_pendingSlot.exchange(-1, std::memory_order_relaxed);
         if (digit >= 0 && digit < kSlotsPerPage)
             PickBuildingSlot(subsystem, page, digit);
 
+        // The notches of a flick walk to the slot they end on; only that one is
+        // picked, so one flick is one call.
         const int32_t notches = g_slotWheel.Take(deltaTime);
+        int32_t target = g_lastSlot;
         for (int32_t steps = 0; steps < (std::min)(std::abs(notches), kMaxStepsPerTick); ++steps)
         {
-            const int32_t next = FindBuildingSlot(page, g_lastSlot, (notches > 0) == kForwardIsNext);
-            if (next < 0 || !PickBuildingSlot(subsystem, page, next))
+            const int32_t next = FindBuildingSlot(page, target, (notches > 0) == kForwardIsNext);
+            if (next < 0)
                 break;
+            target = next;
         }
-
-        // The wheel is taken only on a page that has a building slot to go to.
-        g_canSelect.store(FindBuildingSlot(page, g_lastSlot, true) >= 0, std::memory_order_relaxed);
+        if (target != g_lastSlot)
+            PickBuildingSlot(subsystem, page, target);
     }
 }
 

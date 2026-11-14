@@ -376,7 +376,7 @@ namespace DroneFields
 
 		// The number keys and the plain mouse wheel pick a building slot of the
 		// current hotbar page in the drone, through the game's own
-		// ActivateItemOnHotbarByIndex. Needs the slot rows below as well as the page
+		// ActivateItemOnHotbarByIndex. Needs the slot rows above as well as the page
 		// ones; a game build without hotbar pages loses only this and the page
 		// switch.
 		inline PluginMap::Feature HotbarSelect{ "hotbar-select", "Number keys and the mouse wheel pick a building in the drone",
