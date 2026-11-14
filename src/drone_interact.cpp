@@ -1021,6 +1021,18 @@ namespace
         "?? ?? ?? ?? 48 8B D7 48 8B C8 48 8B 5C 24 30 48 83 C4 20 5F E9 ?? ?? ?? ?? "
         "48 8B CB 48 8B 5C 24 30 48 83 C4 20 5F E9";
 
+    // UCrBuildingComponent::CanRestoreInitialState(this): true while an
+    // existing building is being moved, which the game's cancel snaps back.
+    typedef bool (__fastcall* CanRestoreInitialState_t)(SDK::UCrBuildingComponent* component);
+
+    CanRestoreInitialState_t g_canRestoreInitialState = nullptr;
+    bool                     g_placementCancelOn      = false;
+
+    // The function body to its return, displacements and stack size wildcarded.
+    constexpr const char* kCanRestoreInitialStatePattern =
+        "40 53 48 83 EC ?? 48 8B D9 48 8B 89 ?? ?? ?? ?? 48 85 C9 74 ?? 48 8B 01 FF 90 ?? ?? ?? ?? "
+        "84 C0 74 ?? 83 BB ?? ?? ?? ?? 00 7E ?? B0 01 48 83 C4 ?? 5B C3 32 C0";
+
     NativeOnWeaponCancelTool_t g_origCancelTool = nullptr;
     HookHandle                 g_hookCancelTool = nullptr;
 
@@ -1043,6 +1055,23 @@ namespace
         return menu;
     }
 
+    // The local controller, when its piloting character is this cancel's
+    // character and a new building is in hand: the helper actor is set and the
+    // component is not restoring a move. Valid for this call only.
+    SDK::ACrPlayerControllerBase* PlacingNewBuilding(void* character)
+    {
+        SDK::ACrPlayerControllerBase* pc = LocalController();
+        if (!character || PilotingCharacter(pc) != character)
+            return nullptr;
+
+        SDK::UCrBuildingComponent* building = DroneFields::ValueOr(DroneFields::ControllerBuilding, pc);
+        if (!building || !DroneFields::ValueOr(DroneFields::HelperActor, building)
+            || g_canRestoreInitialState(building))
+            return nullptr;
+
+        return pc;
+    }
+
     // Game thread: both callers are input handlers.
     void __fastcall Detour_NativeOnWeaponCancelTool(void* character)
     {
@@ -1060,6 +1089,19 @@ namespace
         // menu instead, when this cancel is that press.
         if (DroneEscPauseTakeCancel(character))
             return;
+
+        // A new building in hand: end the placement and leave the tool, and
+        // so the drone, where they are. A move in progress still snaps back
+        // in the original.
+        if (g_placementCancelOn)
+        {
+            if (SDK::ACrPlayerControllerBase* pc = PlacingNewBuilding(character))
+            {
+                LOG_DEBUG("DroneBuildMenu: placement cancelled, drone kept");
+                pc->CancelPlacement();
+                return;
+            }
+        }
 
         g_origCancelTool(character);
     }
@@ -1303,6 +1345,9 @@ void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
         DroneFields::Keys::CancelTool, kCancelToolPattern);
     g_addrHandleDeactivate = DroneFields::ResolveFunction(self, scanner,
         DroneFields::Keys::HandleDeactivate, kHandleDeactivatePattern);
+    g_canRestoreInitialState = PluginMap::FunctionAs<CanRestoreInitialState_t>(scanner, self,
+        DroneFields::Keys::CanRestoreInitialState, kCanRestoreInitialStatePattern,
+        PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
 }
 
 bool InitDroneBuildMenu()
@@ -1328,11 +1373,17 @@ bool InitDroneBuildMenu()
 
     LOG_INFO("DroneBuildMenu: NativeOnWeaponCancelTool at 0x%llX, HandleDeactivate at 0x%llX",
              g_addrCancelTool, g_addrHandleDeactivate);
+
+    g_placementCancelOn = DroneFields::Features::PlacementCancel.On() && g_canRestoreInitialState;
+    if (!g_placementCancelOn)
+        LOG_WARN("DroneBuildMenu: no placement-cancel keys on this build -- cancelling a placement will still end drone mode");
     return true;
 }
 
 void ShutdownDroneBuildMenu()
 {
+    g_placementCancelOn = false;
+
     if (g_hookCancelTool)
     {
         GetSelf()->hooks->Hooks->Remove(g_hookCancelTool);

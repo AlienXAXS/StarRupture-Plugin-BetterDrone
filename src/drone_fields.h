@@ -79,6 +79,11 @@ namespace DroneFields
 		"ACrPlayerControllerBase", "PlayerControlState", PLUGIN_FIELD_NATIVE, sizeof(uint8_t), 0xE88 } };
 	inline auto BuildingMenuPlayer = DRONE_FIELD(UCrUW_BuildingMenu, Player);
 
+	// The building being placed: the controller's building component, and the
+	// helper actor it holds while a building is in hand.
+	inline auto ControllerBuilding = DRONE_FIELD(ACrPlayerControllerBase, BuildingComponent);
+	inline auto HelperActor        = DRONE_FIELD(UCrBuildingComponent, HelperActor);
+
 	// A scene component's world transform. ComponentToWorld is an engine member
 	// the generated SDK does not name, and an FTransform keeps its translation
 	// in a SIMD register, so the translation is a native row of its own at the
@@ -232,7 +237,7 @@ namespace DroneFields
 			WeaponSystem, WeaponAttributes, AbilitySystem,
 			DroneOwnCamera, SphereComponent, PlacementDeveloperSettings, IdleSound, MovementSound, RotationSound, StateAudioComponents,
 			AttenuationFPP, AttenuationTPP,
-			CrChar, CurrentInteractableActor, PlayerControlState, BuildingMenuPlayer, TransformTranslation,
+			CrChar, CurrentInteractableActor, PlayerControlState, BuildingMenuPlayer, ControllerBuilding, HelperActor, TransformTranslation,
 			SpeedPerSec, MaxRadius, WarningRadius, MaxHeight, WarningHeight, SphereRadius,
 			FogUncoverRadius, MinFootstepDistance, FogRadiusMultiplier,
 			IsSafeInterior, NativeInputActions, NativeInputAction, NativeInputHandler,
@@ -269,6 +274,7 @@ namespace DroneFields
 		inline constexpr const char* CancelTool         = "ACrCharacterPlayerBase::NativeOnWeaponCancelTool";
 		inline constexpr const char* CloseInGameMenu    = "ACrPlayerControllerBase::NativeOnInputCloseInGameMenu";
 		inline constexpr const char* HandleDeactivate   = "UCrUW_ActivatableWidget::HandleDeactivate";
+		inline constexpr const char* CanRestoreInitialState = "UCrBuildingComponent::CanRestoreInitialState";
 		inline constexpr const char* CanDroneBeActive   = "ACrCharacterPlayerBase::CanBuildingDroneBeActive";
 		inline constexpr const char* CheckIfInInterior  = "ACrCharacterPlayerBase::CheckIfInInterior";
 		inline constexpr const char* MapCenterOnLocation = "UCrUW_MapMenuMapArea::CenterOnLocation";
@@ -353,6 +359,14 @@ namespace DroneFields
 			PluginMap::KeysOf(Keys::CancelTool, Keys::HandleDeactivate, BuildingMenuPlayer),
 			{} };
 
+		// With a new building in hand, the cancel input ends the placement and
+		// keeps the drone, instead of putting the building tool away. It rides the
+		// same cancel-tool detour as BuildMenu, so it also needs that part on. A
+		// part of its own: a game build without these keys loses only this.
+		inline PluginMap::Feature PlacementCancel{ "placement-cancel", "Cancelling a placement keeps the drone",
+			PluginMap::KeysOf(Keys::CancelTool, Keys::CanRestoreInitialState, ControllerBuilding, HelperActor),
+			{} };
+
 		// Esc opens the pause menu in the drone. A part of its own: a game build
 		// without the key loses only this option, and Esc keeps ending the drone. The
 		// cancel-tool path of it also needs BuildMenu.
@@ -382,7 +396,7 @@ namespace DroneFields
 		{
 			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, MapFollow, Limits, SprintKey,
 				Announcer,
-				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarPage, MapOpen, BuildMenu, EscPause, Speedometer, SpeedometerHeight, Audio);
+				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarPage, MapOpen, BuildMenu, PlacementCancel, EscPause, Speedometer, SpeedometerHeight, Audio);
 		}
 	}
 

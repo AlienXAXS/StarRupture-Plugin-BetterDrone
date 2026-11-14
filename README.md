@@ -66,6 +66,10 @@ Hold **Ctrl** and scroll the mouse wheel while the drone is out to switch your h
 
 Turn on `Esc Opens Pause Menu In Drone Mode` (off by default) and **Esc** in the drone opens the game's pause menu, and pauses as it does on foot, instead of recalling the drone. When the menu closes you are still in the drone, in the same spot. **Q** still recalls the drone, on or off. Esc while you are placing a building still leaves the drone as before. Keyboard Esc only.
 
+### Cancelling a placement keeps the drone <sup>[✦](#msantoro12)</sup>
+
+While you fly with a new building in hand, **Q** or **B** (the game's cancel-tool input) ends the placement and you stay in the drone, where the game would have ended the drone with the tool. If you are moving an existing building, the same key still snaps it back to where it was. **Q** with nothing in hand still returns you to your character. It needs the loader's map entries for the game version; without them the game's own behaviour is kept.
+
 ### The map from the drone <sup>[✦](#msantoro12)</sup>
 
 - **Open it:** the map key (**M**; rebindable on the loader's Config page, Interaction) opens the map while you fly and closes it again, never over another menu.
