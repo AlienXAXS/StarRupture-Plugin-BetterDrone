@@ -167,9 +167,24 @@ Found a bug? [Report it on GitHub](https://github.com/AlienXAXS/StarRupture-Plug
 
 ## Building from Source
 
-Requires Visual Studio 2022 and the [StarRupture-Plugin-SDK](https://github.com/AlienXAXS/StarRupture-Plugin-SDK).
+Requires Visual Studio 2022.
 
-Clone the repo, open `BetterDrone.sln`, and build the `Client Release|x64` configuration. The output DLL will be placed in `build\Client Release\Plugins\`.
+Put the plugin next to `StarRupture-Plugin-SDK` and clone both with `--recursive`, so the game SDK submodules come along:
+
+```
+git clone --recursive https://github.com/AlienXAXS/StarRupture-Plugin-SDK.git
+git clone --recursive https://github.com/AlienXAXS/StarRupture-Plugin-BetterDrone.git
+```
+
+```
+<parent folder>/
+├── StarRupture-Plugin-SDK/
+└── StarRupture-Plugin-BetterDrone/
+```
+
+The game SDK comes from this plugin's own `StarRupture SDK` submodule when it has one, otherwise from the Plugin SDK's. To build against other folders, pass `/p:PluginSDKInclude=...` and `/p:GameSDKRoot=...` to msbuild.
+
+Then open `BetterDrone.sln`, and build the `Client Release|x64` configuration. The output DLL will be placed in `build\Client Release\Plugins\`.
 
 ---
 
