@@ -19,3 +19,4 @@
 - New speed preset Light Construction (1450 cm/s, 2.25x boost), halfway between Stock and Better Construction
 - Q or B with a new building in hand ends the placement and keeps you in the drone; moving an existing building still snaps back
 - Q or B with the building menu open closes the menu and keeps you in the drone, on game versions where the menu sits on the game-menu layer too
+- Needs ModLoader 1.24.0 or later: keeping the drone on Q/B in the build menu or while placing, the number keys and the wheel picking hotbar items (in the drone and on foot), the Ctrl+wheel hotbar page, and the Esc pause option. On an older loader Better Drone still loads and those parts stay off; everything else works as before
