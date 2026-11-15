@@ -77,7 +77,7 @@ Turn on `Esc Opens Pause Menu In Drone Mode` (off by default) and **Esc** in the
 
 ### Cancelling a placement keeps the drone <sup>[✦](#msantoro12)</sup>
 
-While you fly with a new building in hand, **Q** or **B** (the game's cancel key) ends the placement and you stay in the drone, where the game would have ended the drone with the tool. If you are moving an existing building, the same key still snaps it back to where it was. **Q** with nothing in hand still returns you to your character. It needs the loader's version object map to have an entry for the game version (the version map); without it the game's own behaviour is kept.
+While you fly with a new building in hand, **Q** or **B** (the game's cancel key) ends the placement and you stay in the drone, where the game would have ended the drone with the tool. If you are moving an existing building, the same key still snaps it back to where it was. **Q** or **B** with the building menu open closes the menu and keeps you in the drone. **Q** with no menu open and nothing in hand still returns you to your character. It needs the loader's version object map to have an entry for the game version (the version map); without it the game's own behaviour is kept.
 
 ### The map from the drone <sup>[✦](#msantoro12)</sup>
 

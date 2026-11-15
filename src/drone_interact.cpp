@@ -14,6 +14,7 @@
 #include <EnhancedInput_structs.hpp>
 #include <Engine_classes.hpp>
 #include <GameplayAbilities_classes.hpp>
+#include <UMG_classes.hpp>
 #include <atomic>
 #include <optional>
 #include <windows.h>
@@ -733,7 +734,7 @@ namespace
     // widget is fully gone, close animation included, which is the whole time
     // a menu counts as open here. The callback runs on the game thread, the
     // loader's tick runs before this plugin's, and any thread may read it.
-    constexpr uint64_t kMenuStateMask = PLUGIN_UI_ANY_MENU | PLUGIN_UI_MAP;
+    constexpr uint64_t kMenuStateMask = PLUGIN_UI_ANY_MENU | PLUGIN_UI_MAP | PLUGIN_UI_BUILD_MENU;
     std::atomic<uint64_t> g_uiState{ 0 };
 
     void OnUIState(uint64_t, uint64_t newState, void*)
@@ -748,8 +749,12 @@ namespace
     // Walked only to get at a widget that is about to be acted on.
     constexpr const char* kMenuLayerTag = "UI.Layer.Menu";
 
-    // The local player's menu layer, or null. Valid for the current tick only.
-    SDK::UCommonActivatableWidgetContainerBase* FindMenuLayer(SDK::ACrPlayerControllerBase* pc)
+    // The layer the building menu opens on in newer game builds.
+    constexpr const char* kGameMenuLayerTag = "UI.Layer.GameMenu";
+
+    // The local player's layer with this tag, or null. Valid for the current
+    // tick only.
+    SDK::UCommonActivatableWidgetContainerBase* FindLayer(SDK::ACrPlayerControllerBase* pc, const char* tag)
     {
         auto* ui = static_cast<SDK::UGameUIManagerSubsystem*>(
             SDK::USubsystemBlueprintLibrary::GetGameInstanceSubsystem(pc, SDK::UCrUIManagerSubsystem::StaticClass()));
@@ -771,12 +776,18 @@ namespace
                     continue;
 
                 SDK::UCommonActivatableWidgetContainerBase* stack = layers[l].Value();
-                if (stack && layers[l].Key().TagName.ToString() == kMenuLayerTag)
+                if (stack && layers[l].Key().TagName.ToString() == tag)
                     return stack;
             }
         }
 
         return nullptr;
+    }
+
+    // The local player's menu layer, or null. Valid for the current tick only.
+    SDK::UCommonActivatableWidgetContainerBase* FindMenuLayer(SDK::ACrPlayerControllerBase* pc)
+    {
+        return FindLayer(pc, kMenuLayerTag);
     }
 
     // The menu of type T, if it is the active widget on the menu layer and
@@ -989,32 +1000,87 @@ namespace
     // mode the same press ends the drone.
     typedef void (__fastcall* NativeOnWeaponCancelTool_t)(void* character);
 
-    // UCrUW_ActivatableWidget::HandleDeactivate(this): how every other menu
-    // closes on Back and Close. With a Chimera controller it hands the menu
-    // layer to UCrUIManagerSubsystem::CloseMainWidgetByClass, which also puts
-    // the input config back to the game.
-    typedef void (__fastcall* HandleDeactivate_t)(void* widget);
+    // ACrCharacterPlayerBase::DeactivateBuildingDrone(this, bool): ends the
+    // drone. Not reflected. Callers include the close-menu input, the build
+    // cancel input and an unequip of the building tool, and one Q or B press
+    // can reach several of them. Optional: a build without the row only loses
+    // the veto below.
+    typedef void (__fastcall* DeactivateBuildingDrone_t)(void* character, bool flag);
 
     // Resolved during OnPluginLoadHooks; 0 means the pattern missed on this build.
-    uintptr_t g_addrCancelTool       = 0;
-    uintptr_t g_addrHandleDeactivate = 0;
+    uintptr_t g_addrCancelTool = 0;
+
+    DeactivateBuildingDrone_t g_deactivateDrone     = nullptr;
+    DeactivateBuildingDrone_t g_origDeactivateDrone = nullptr;
+    HookHandle                g_hookDeactivateDrone = nullptr;
+
+    // The function's first bytes, up to the second virtual call. The member
+    // offsets, the flag mask and the vtable slots are wildcarded, so the same
+    // bytes match on every game build.
+    constexpr const char* kDeactivateDronePattern =
+        "48 89 5C 24 20 41 56 48 83 EC 30 48 8B D9 44 0F B6 F2 48 8B 89 ?? ?? ?? ?? F6 81 ?? ?? ?? ?? 10 "
+        "0F 84 ?? ?? ?? ?? 48 8B 01 48 89 7C 24 50 FF 90 ?? ?? ?? ?? 48 8B 8B ?? ?? ?? ?? 48 8B 01 FF 90 "
+        "?? ?? ?? ??";
+
+    // The Q or B press this plugin last saw: g_pressTick is the tick it arrived
+    // in plus one (0: none), g_pressSeq counts presses. g_handledSeq is the
+    // press whose building menu or placement the cancel detour closed. The
+    // keybind callback's thread is not guaranteed, so these are atomics. The
+    // loader dispatches the key before the game's input runs, so every handler
+    // that belongs to the press runs in the same tick or the next.
+    std::atomic<uint64_t> g_tick{ 0 };
+    std::atomic<uint64_t> g_pressTick{ 0 };
+    std::atomic<uint64_t> g_pressSeq{ 0 };
+    std::atomic<uint64_t> g_handledSeq{ 0 };
+
+    void OnPressTick(float)
+    {
+        g_tick.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void OnPressKey(EModKey, EModKeyEvent event)
+    {
+        if (event != EModKeyEvent::Pressed)
+            return;
+        g_pressSeq.fetch_add(1, std::memory_order_relaxed);
+        g_pressTick.store(g_tick.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
+
+    // The detour closed a menu or ended a placement for the press in flight.
+    void MarkPressHandled()
+    {
+        g_handledSeq.store(g_pressSeq.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+
+    // True when this end-of-drone call belongs to a Q or B press that the
+    // cancel detour already handled, for the local player's drone. Game thread.
+    bool PressHandled(void* character)
+    {
+        const uint64_t at  = g_pressTick.load(std::memory_order_relaxed);
+        const uint64_t seq = g_pressSeq.load(std::memory_order_relaxed);
+        if (!at || g_handledSeq.load(std::memory_order_relaxed) != seq
+            || g_tick.load(std::memory_order_relaxed) - (at - 1) > 1)
+            return false;
+
+        return character && PilotingCharacter(LocalController()) == character;
+    }
+
+    void __fastcall Detour_DeactivateBuildingDrone(void* character, bool flag)
+    {
+        // The same press's other handlers (the close-menu input, the build
+        // cancel input) would end the drone the cancel detour just kept. Death,
+        // damage and every other call pass straight through.
+        if (PressHandled(character))
+            return;
+
+        g_origDeactivateDrone(character, flag);
+    }
 
     // Runs through the cancel's first gate, the weapon component flag at
     // 0xDA0, and the controller's building component lookup.
     constexpr const char* kCancelToolPattern =
         "40 53 48 83 EC 20 48 8B 81 ?? ?? ?? ?? 48 8B D9 F6 80 ?? ?? ?? ?? 01 75 ?? "
         "48 8B 89 ?? ?? ?? ?? 48 89 7C 24 30 48 85 C9 74 ?? E8";
-
-    // Runs to the end of the function: the two tails, the jump to
-    // CloseMainWidgetByClass and the fallback to DeactivateWidget for a
-    // controller that is not a Chimera one, are what tell it apart from the
-    // map's and the encyclopedia's own close handlers, which begin the same way.
-    constexpr const char* kHandleDeactivatePattern =
-        "48 89 5C 24 08 57 48 83 EC 20 48 8B 01 48 8B D9 FF 90 ?? ?? ?? ?? 48 8B F8 "
-        "48 85 C0 74 ?? E8 ?? ?? ?? ?? 48 8B 4F 10 48 83 C0 30 48 63 50 08 3B 51 38 "
-        "7F ?? 48 8B 49 30 48 39 04 D1 75 ?? 48 8B CB E8 ?? ?? ?? ?? 48 8B C8 E8 "
-        "?? ?? ?? ?? 48 8B D7 48 8B C8 48 8B 5C 24 30 48 83 C4 20 5F E9 ?? ?? ?? ?? "
-        "48 8B CB 48 8B 5C 24 30 48 83 C4 20 5F E9";
 
     // UCrBuildingComponent::CanRestoreInitialState(this): true while an
     // existing building is being moved, which the game's cancel snaps back.
@@ -1032,18 +1098,29 @@ namespace
     HookHandle                 g_hookCancelTool = nullptr;
 
     // The building menu this cancel came from, if the local player is flying
-    // the drone and that menu is the active widget on their menu layer.
-    // HandleCancelTool runs inside the menu's own action handler, so the
-    // menu is still up, and still active, when this is asked. Valid for this
-    // call only.
+    // the drone and the loader reports the build menu open. The menu sits on
+    // the game-menu layer on newer builds and on the menu layer on older ones,
+    // so both are searched. HandleCancelTool runs inside the menu's own action
+    // handler, so the menu is still up, and still active, when this is asked.
+    // Valid for this call only.
     SDK::UCrUW_BuildingMenu* DroneBuildMenu(void* character)
     {
+        if (!(g_uiState.load(std::memory_order_relaxed) & PLUGIN_UI_BUILD_MENU))
+            return nullptr;
+
         SDK::ACrPlayerControllerBase* pc = LocalController();
         if (!character || PilotingCharacter(pc) != character)
             return nullptr;
 
-        SDK::UCommonActivatableWidgetContainerBase* layer = FindMenuLayer(pc);
-        SDK::UCrUW_BuildingMenu* menu = layer ? ActiveMenu<SDK::UCrUW_BuildingMenu>(layer) : nullptr;
+        SDK::UCrUW_BuildingMenu* menu = nullptr;
+        for (const char* tag : { kGameMenuLayerTag, kMenuLayerTag })
+        {
+            SDK::UCommonActivatableWidgetContainerBase* layer = FindLayer(pc, tag);
+            menu = layer ? ActiveMenu<SDK::UCrUW_BuildingMenu>(layer) : nullptr;
+            if (menu)
+                break;
+        }
+
         if (!menu || DroneFields::ValueOr(DroneFields::BuildingMenuPlayer, menu) != character)
             return nullptr;
 
@@ -1072,11 +1149,17 @@ namespace
     {
         if (SDK::UCrUW_BuildingMenu* menu = DroneBuildMenu(character))
         {
-            // Close it the way every other menu closes, and leave the tool,
-            // and so the drone, where they are. The next Escape or Q, with
-            // no menu up, goes the usual way.
-            LOG_DEBUG("DroneBuildMenu: building menu closed, drone kept");
-            reinterpret_cast<HandleDeactivate_t>(g_addrHandleDeactivate)(menu);
+            // Close it, give the mouse and input back to the game as the
+            // close-menu handler does, and leave the tool, and so the drone,
+            // where they are. The next Escape or Q, with no menu up, goes the
+            // usual way.
+            menu->DeactivateWidget();
+            if (SDK::ACrPlayerControllerBase* pc = LocalController())
+            {
+                pc->bShowMouseCursor = false;
+                SDK::UWidgetBlueprintLibrary::SetInputMode_GameOnly(pc, false);
+            }
+            MarkPressHandled();
             return;
         }
 
@@ -1092,8 +1175,8 @@ namespace
         {
             if (SDK::ACrPlayerControllerBase* pc = PlacingNewBuilding(character))
             {
-                LOG_DEBUG("DroneBuildMenu: placement cancelled, drone kept");
                 pc->CancelPlacement();
+                MarkPressHandled();
                 return;
             }
         }
@@ -1338,8 +1421,9 @@ void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
 
     g_addrCancelTool = DroneFields::ResolveFunction(self, scanner,
         DroneFields::Keys::CancelTool, kCancelToolPattern);
-    g_addrHandleDeactivate = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::HandleDeactivate, kHandleDeactivatePattern);
+    g_deactivateDrone = PluginMap::FunctionAs<DeactivateBuildingDrone_t>(scanner, self,
+        DroneFields::Keys::DeactivateBuildingDrone, PLUGIN_MAP_PATTERN(kDeactivateDronePattern),
+        PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
     g_canRestoreInitialState = PluginMap::FunctionAs<CanRestoreInitialState_t>(scanner, self,
         DroneFields::Keys::CanRestoreInitialState, kCanRestoreInitialStatePattern,
         PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
@@ -1347,11 +1431,10 @@ void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
 
 bool InitDroneBuildMenu()
 {
-    if (!g_addrCancelTool || !g_addrHandleDeactivate)
+    if (!g_addrCancelTool)
     {
-        LOG_WARN("DroneBuildMenu: unresolved addresses — cancelTool=0x%llX handleDeactivate=0x%llX; "
-                 "closing the building menu will still end drone mode",
-                 g_addrCancelTool, g_addrHandleDeactivate);
+        LOG_WARN("DroneBuildMenu: NativeOnWeaponCancelTool unresolved; "
+                 "closing the building menu will still end drone mode");
         return false;
     }
 
@@ -1366,8 +1449,26 @@ bool InitDroneBuildMenu()
         return false;
     }
 
-    LOG_INFO("DroneBuildMenu: NativeOnWeaponCancelTool at 0x%llX, HandleDeactivate at 0x%llX",
-             g_addrCancelTool, g_addrHandleDeactivate);
+    LOG_INFO("DroneBuildMenu: NativeOnWeaponCancelTool at 0x%llX", g_addrCancelTool);
+
+    auto* input = GetSelf()->hooks->Input;
+    if (g_deactivateDrone && input)
+    {
+        g_hookDeactivateDrone = GetSelf()->hooks->Hooks->Install(
+            reinterpret_cast<uintptr_t>(g_deactivateDrone),
+            reinterpret_cast<void*>(&Detour_DeactivateBuildingDrone),
+            reinterpret_cast<void**>(&g_origDeactivateDrone));
+        if (g_hookDeactivateDrone)
+        {
+            GetSelf()->hooks->Engine->RegisterOnTick(OnPressTick);
+            input->RegisterKeybind(EModKey::Q, EModKeyEvent::Pressed, OnPressKey);
+            input->RegisterKeybind(EModKey::B, EModKeyEvent::Pressed, OnPressKey);
+        }
+        else
+            LOG_INFO("DroneBuildMenu: DeactivateBuildingDrone hook failed -- Q or B may still end the drone");
+    }
+    else
+        LOG_INFO("DroneBuildMenu: no DeactivateBuildingDrone on this build -- Q or B may still end the drone");
 
     g_placementCancelOn = DroneFields::Features::PlacementCancel.On() && g_canRestoreInitialState;
     if (!g_placementCancelOn)
@@ -1378,6 +1479,18 @@ bool InitDroneBuildMenu()
 void ShutdownDroneBuildMenu()
 {
     g_placementCancelOn = false;
+
+    if (g_hookDeactivateDrone)
+    {
+        auto* self = GetSelf();
+        self->hooks->Input->UnregisterKeybind(EModKey::Q, EModKeyEvent::Pressed, OnPressKey);
+        self->hooks->Input->UnregisterKeybind(EModKey::B, EModKeyEvent::Pressed, OnPressKey);
+        self->hooks->Engine->UnregisterOnTick(OnPressTick);
+        self->hooks->Hooks->Remove(g_hookDeactivateDrone);
+        g_hookDeactivateDrone = nullptr;
+        g_origDeactivateDrone = nullptr;
+        g_pressTick.store(0, std::memory_order_relaxed);
+    }
 
     if (g_hookCancelTool)
     {
