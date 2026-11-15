@@ -395,7 +395,12 @@ namespace
     }
 
     // The slot a number key is: key N is slot N, as the game's own
-    // GetHotbarItemIndex has it, and 0 is slot 0.
+    // GetHotbarItemIndex has it, and 0 is slot 0. Zero to Nine are contiguous
+    // in the enum, which the subtraction and the registration loop rely on.
+    static_assert(static_cast<int>(EModKey::One) - static_cast<int>(EModKey::Zero) == 1
+        && static_cast<int>(EModKey::Nine) - static_cast<int>(EModKey::Zero) == 9
+        && static_cast<int>(EModKey::Five) - static_cast<int>(EModKey::Zero) == 5,
+        "EModKey digits must be contiguous, Zero first");
     int32_t SlotOfKey(EModKey key)
     {
         return static_cast<int32_t>(key) - static_cast<int32_t>(EModKey::Zero);

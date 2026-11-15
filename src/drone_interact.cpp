@@ -734,6 +734,9 @@ namespace
     // widget is fully gone, close animation included, which is the whole time
     // a menu counts as open here. The callback runs on the game thread, the
     // loader's tick runs before this plugin's, and any thread may read it.
+    // The mask only picks which changes wake the callback, which stores the
+    // whole state. Every reader tests its own bit (ANY_MENU in IsGameMenuOpen,
+    // MAP, BUILD_MENU), so adding BUILD_MENU changes none of their answers.
     constexpr uint64_t kMenuStateMask = PLUGIN_UI_ANY_MENU | PLUGIN_UI_MAP | PLUGIN_UI_BUILD_MENU;
     std::atomic<uint64_t> g_uiState{ 0 };
 
@@ -992,10 +995,10 @@ namespace
     //
     // Two things call it: the cancel-tool input action, and
     // UCrUW_BuildingMenu::HandleCancelTool. The building menu is the one menu
-    // that does not close the way the others do. UCrUW_ActivatableWidget
-    // binds its Back and Close actions (Escape and Q) to HandleDeactivate;
-    // UCrUW_BuildingMenu::SetupInputs binds both, and its CloseMenuInputAction,
-    // to HandleCancelTool, which tail-calls this with the menu's Player. On
+    // that does not close the way the others do. UCrUW_BuildingMenu::SetupInputs
+    // binds its Back and Close actions (Escape and Q), and its
+    // CloseMenuInputAction, to HandleCancelTool, which tail-calls this with the
+    // menu's Player, where the other menus close themselves. On
     // foot that closes the menu and puts the tool away in one press. In drone
     // mode the same press ends the drone.
     typedef void (__fastcall* NativeOnWeaponCancelTool_t)(void* character);
@@ -1014,28 +1017,42 @@ namespace
     DeactivateBuildingDrone_t g_origDeactivateDrone = nullptr;
     HookHandle                g_hookDeactivateDrone = nullptr;
 
-    // The function's first bytes, up to the second virtual call. The member
-    // offsets, the flag mask and the vtable slots are wildcarded, so the same
-    // bytes match on every game build.
+    // The function start through its first two relative calls. The member
+    // offsets, the flag mask, the stack size, the vtable slots and the call
+    // displacements are wildcarded, so the same bytes match on every game
+    // build.
     constexpr const char* kDeactivateDronePattern =
-        "48 89 5C 24 20 41 56 48 83 EC 30 48 8B D9 44 0F B6 F2 48 8B 89 ?? ?? ?? ?? F6 81 ?? ?? ?? ?? 10 "
-        "0F 84 ?? ?? ?? ?? 48 8B 01 48 89 7C 24 50 FF 90 ?? ?? ?? ?? 48 8B 8B ?? ?? ?? ?? 48 8B 01 FF 90 "
-        "?? ?? ?? ??";
+        "48 89 5C 24 20 41 56 48 83 EC ?? 48 8B D9 44 0F B6 F2 48 8B 89 ?? ?? ?? ?? F6 81 ?? ?? ?? ?? 10 "
+        "0F 84 ?? ?? ?? ?? 48 8B 01 48 89 7C 24 ?? FF 90 ?? ?? ?? ?? 48 8B 8B ?? ?? ?? ?? 48 8B 01 FF 90 "
+        "?? ?? ?? ?? 48 8B 8B ?? ?? ?? ?? 33 D2 48 8B 01 FF 90 ?? ?? ?? ?? 48 8B 8B ?? ?? ?? ?? 48 85 C9 "
+        "74 ?? 48 8B 93 ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 D2 48 8B CB E8 ?? ?? ?? ??";
 
-    // The Q or B press this plugin last saw: g_pressTick is the tick it arrived
-    // in plus one (0: none), g_pressSeq counts presses. g_handledSeq is the
-    // press whose building menu or placement the cancel detour closed. The
-    // keybind callback's thread is not guaranteed, so these are atomics. The
-    // loader dispatches the key before the game's input runs, so every handler
-    // that belongs to the press runs in the same tick or the next.
+    // The press window. g_pressTick is the tick the press arrived in plus one
+    // (0: none), g_pressSeq counts presses, and g_handledSeq is the press whose
+    // building menu or placement the cancel detour closed. The loader
+    // dispatches Q and B from the window procedure whatever menu is open (only
+    // a focused text field holds a key back), before the game's input runs, so
+    // every handler that belongs to the press runs in the same tick or the
+    // next. The game's own handlers do not run in a fixed order, so the cancel
+    // detour and the close-menu detour also open the window, which covers a
+    // press the keybind never reported (Esc). Keybind threads are not
+    // guaranteed, so these are atomics.
     std::atomic<uint64_t> g_tick{ 0 };
     std::atomic<uint64_t> g_pressTick{ 0 };
     std::atomic<uint64_t> g_pressSeq{ 0 };
     std::atomic<uint64_t> g_handledSeq{ 0 };
 
+    bool g_placementCancelOn = false;
+
     void OnPressTick(float)
     {
         g_tick.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    bool InPressWindow()
+    {
+        const uint64_t at = g_pressTick.load(std::memory_order_relaxed);
+        return at && g_tick.load(std::memory_order_relaxed) - (at - 1) <= 1;
     }
 
     void OnPressKey(EModKey, EModKeyEvent event)
@@ -1046,31 +1063,76 @@ namespace
         g_pressTick.store(g_tick.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     }
 
+    // The press in flight ran a handler. Opens the window if the keybind has
+    // not, and leaves it as it is if it has.
+    void NotePress()
+    {
+        if (!InPressWindow())
+            OnPressKey(EModKey::Unknown, EModKeyEvent::Pressed);
+    }
+
     // The detour closed a menu or ended a placement for the press in flight.
     void MarkPressHandled()
     {
+        NotePress();
         g_handledSeq.store(g_pressSeq.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
 
-    // True when this end-of-drone call belongs to a Q or B press that the
-    // cancel detour already handled, for the local player's drone. Game thread.
-    bool PressHandled(void* character)
+    // The building menu is up as of the loader's last tick, close animation
+    // included, so it still is in the tick the cancel detour closes it.
+    bool BuildMenuUp()
     {
-        const uint64_t at  = g_pressTick.load(std::memory_order_relaxed);
-        const uint64_t seq = g_pressSeq.load(std::memory_order_relaxed);
-        if (!at || g_handledSeq.load(std::memory_order_relaxed) != seq
-            || g_tick.load(std::memory_order_relaxed) - (at - 1) > 1)
+        return (g_uiState.load(std::memory_order_relaxed) & PLUGIN_UI_BUILD_MENU) != 0;
+    }
+
+    // A building is in hand: the controller's building component has its
+    // helper actor. Valid for this call only.
+    bool BuildingHeld(SDK::ACrPlayerControllerBase* pc)
+    {
+        SDK::UCrBuildingComponent* building = DroneFields::ValueOr(DroneFields::ControllerBuilding, pc);
+        return building && DroneFields::ValueOr(DroneFields::HelperActor, building);
+    }
+
+    // True when the building tool is still equipped. The unequip is what ends
+    // the drone from PostEquip, so a call that finds it gone must go through:
+    // vetoing it would leave the drone without its tool.
+    bool ToolStillOut(SDK::ACrCharacterPlayerBase* character)
+    {
+        SDK::UCrWeaponComponent* weapons = DroneFields::ValueOr(DroneFields::WeaponSystem, character);
+        return weapons && !DroneFields::ValueOr(DroneFields::LastEquippedUnarmed, weapons, false);
+    }
+
+    // True when this end-of-drone call is the tail of a Q, B or Esc press that
+    // BD answers by keeping the drone, whatever order the game's handlers ran
+    // in: the press window is open, and BD handled the press, or the building
+    // menu is up, or a building is in hand. The local player's living pilot
+    // only. Death, travel and teardown (the controller or the pawn already
+    // gone) fail one of those tests and pass through. Game thread.
+    bool KeepDrone(void* character)
+    {
+        if (!character || !InPressWindow())
             return false;
 
-        return character && PilotingCharacter(LocalController()) == character;
+        SDK::ACrPlayerControllerBase* pc = LocalController();
+        auto* player = static_cast<SDK::ACrCharacterPlayerBase*>(character);
+        if (!pc || PilotingCharacter(pc) != player || pc->Pawn != static_cast<SDK::APawn*>(player)
+            || DroneFields::Dead(player))
+            return false;
+
+        const bool handled = g_handledSeq.load(std::memory_order_relaxed) == g_pressSeq.load(std::memory_order_relaxed);
+        if (!handled && !BuildMenuUp() && !(g_placementCancelOn && BuildingHeld(pc)))
+            return false;
+
+        return ToolStillOut(player);
     }
 
     void __fastcall Detour_DeactivateBuildingDrone(void* character, bool flag)
     {
         // The same press's other handlers (the close-menu input, the build
         // cancel input) would end the drone the cancel detour just kept. Death,
-        // damage and every other call pass straight through.
-        if (PressHandled(character))
+        // damage and every other call pass straight through, and the flag goes
+        // to the original as it came.
+        if (KeepDrone(character))
             return;
 
         g_origDeactivateDrone(character, flag);
@@ -1087,7 +1149,6 @@ namespace
     typedef bool (__fastcall* CanRestoreInitialState_t)(SDK::UCrBuildingComponent* component);
 
     CanRestoreInitialState_t g_canRestoreInitialState = nullptr;
-    bool                     g_placementCancelOn      = false;
 
     // The function body to its return, displacements and stack size wildcarded.
     constexpr const char* kCanRestoreInitialStatePattern =
@@ -1103,12 +1164,11 @@ namespace
     // so both are searched. HandleCancelTool runs inside the menu's own action
     // handler, so the menu is still up, and still active, when this is asked.
     // Valid for this call only.
-    SDK::UCrUW_BuildingMenu* DroneBuildMenu(void* character)
+    SDK::UCrUW_BuildingMenu* DroneBuildMenu(void* character, SDK::ACrPlayerControllerBase* pc)
     {
-        if (!(g_uiState.load(std::memory_order_relaxed) & PLUGIN_UI_BUILD_MENU))
+        if (!BuildMenuUp())
             return nullptr;
 
-        SDK::ACrPlayerControllerBase* pc = LocalController();
         if (!character || PilotingCharacter(pc) != character)
             return nullptr;
 
@@ -1127,34 +1187,33 @@ namespace
         return menu;
     }
 
-    // The local controller, when its piloting character is this cancel's
-    // character and a new building is in hand: the helper actor is set and the
-    // component is not restoring a move. Valid for this call only.
-    SDK::ACrPlayerControllerBase* PlacingNewBuilding(void* character)
+    // True when the controller's piloting character is this cancel's character
+    // and a new building is in hand: the helper actor is set and the component
+    // is not restoring a move.
+    bool PlacingNewBuilding(void* character, SDK::ACrPlayerControllerBase* pc)
     {
-        SDK::ACrPlayerControllerBase* pc = LocalController();
         if (!character || PilotingCharacter(pc) != character)
-            return nullptr;
+            return false;
 
         SDK::UCrBuildingComponent* building = DroneFields::ValueOr(DroneFields::ControllerBuilding, pc);
-        if (!building || !DroneFields::ValueOr(DroneFields::HelperActor, building)
-            || g_canRestoreInitialState(building))
-            return nullptr;
-
-        return pc;
+        return building && DroneFields::ValueOr(DroneFields::HelperActor, building)
+            && !g_canRestoreInitialState(building);
     }
 
     // Game thread: both callers are input handlers.
     void __fastcall Detour_NativeOnWeaponCancelTool(void* character)
     {
-        if (SDK::UCrUW_BuildingMenu* menu = DroneBuildMenu(character))
+        NotePress();
+
+        SDK::ACrPlayerControllerBase* pc = LocalController();
+        if (SDK::UCrUW_BuildingMenu* menu = DroneBuildMenu(character, pc))
         {
             // Close it, give the mouse and input back to the game as the
             // close-menu handler does, and leave the tool, and so the drone,
             // where they are. The next Escape or Q, with no menu up, goes the
             // usual way.
             menu->DeactivateWidget();
-            if (SDK::ACrPlayerControllerBase* pc = LocalController())
+            if (pc)
             {
                 pc->bShowMouseCursor = false;
                 SDK::UWidgetBlueprintLibrary::SetInputMode_GameOnly(pc, false);
@@ -1173,7 +1232,7 @@ namespace
         // in the original.
         if (g_placementCancelOn)
         {
-            if (SDK::ACrPlayerControllerBase* pc = PlacingNewBuilding(character))
+            if (PlacingNewBuilding(character, pc))
             {
                 pc->CancelPlacement();
                 MarkPressHandled();
@@ -1414,6 +1473,12 @@ void ShutdownDroneFog()
     g_fogEnabled.store(false, std::memory_order_relaxed);
 }
 
+void NoteDronePress()
+{
+    if (g_hookDeactivateDrone)
+        NotePress();
+}
+
 void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
 {
     if (!self || !scanner)
@@ -1422,7 +1487,7 @@ void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
     g_addrCancelTool = DroneFields::ResolveFunction(self, scanner,
         DroneFields::Keys::CancelTool, kCancelToolPattern);
     g_deactivateDrone = PluginMap::FunctionAs<DeactivateBuildingDrone_t>(scanner, self,
-        DroneFields::Keys::DeactivateBuildingDrone, PLUGIN_MAP_PATTERN(kDeactivateDronePattern),
+        DroneFields::Keys::DeactivateBuildingDrone, kDeactivateDronePattern,
         PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
     g_canRestoreInitialState = PluginMap::FunctionAs<CanRestoreInitialState_t>(scanner, self,
         DroneFields::Keys::CanRestoreInitialState, kCanRestoreInitialStatePattern,
