@@ -182,7 +182,7 @@ git clone --recursive https://github.com/AlienXAXS/StarRupture-Plugin-BetterDron
 └── StarRupture-Plugin-BetterDrone/
 ```
 
-The game SDK comes from this plugin's own `StarRupture SDK` submodule when it has one, otherwise from the Plugin SDK's. To build against other folders, pass `/p:PluginSDKInclude=...` and `/p:GameSDKRoot=...` to msbuild.
+The game SDK comes from the Plugin SDK's `StarRupture SDK` submodule (hence the recursive clone of `StarRupture-Plugin-SDK`). To build against other folders, pass `/p:PluginSDKInclude=...` and `/p:GameSDKRoot=...` to msbuild.
 
 Then open `BetterDrone.sln`, and build the `Client Release|x64` configuration. The output DLL will be placed in `build\Client Release\Plugins\`.
 
