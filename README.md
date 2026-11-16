@@ -175,7 +175,7 @@ Saved presets are in `Plugins\config\BetterDrone-Presets.ini`: `[Speed:<name>]` 
 
 3. After the first launch, set your values in the BetterDrone panel, or edit the INI files above.
 
-> **Requires [StarRupture-ModLoader](https://github.com/AlienXAXS/StarRupture-ModLoader) 1.24.0 or newer** to be installed first. The hotbar parts (the number keys and the wheel picking hotbar items, and the Ctrl+wheel hotbar page) also need a game version with hotbar pages.
+> **Requires [ModLoader 1.24.0 or newer](https://github.com/AlienXAXS/StarRupture-ModLoader)** to be installed first. The hotbar parts (the number keys and the wheel picking hotbar items, and the Ctrl+wheel hotbar page) also need a game version with hotbar pages.
 
 ---
 
