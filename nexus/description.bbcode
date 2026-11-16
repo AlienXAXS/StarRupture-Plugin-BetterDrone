@@ -46,7 +46,7 @@ A slider, a number box and a reset arrow for each row: Drone Speed, Acceleration
 [*][b]Speed Display Unit[/b] — km/h (default), mph or cm/s. Sets the speed, acceleration and range rows, the toast, the speedometer and the HUD's distance and height readouts (feet with mph, metres otherwise). ✦
 [*][b]Speedometer[/b] — the drone's speed under the HUD's distance readout, its number lined up with the distance digits; the HUD ring stays centred on the crosshair as the distance and height change. On by default. ✦
 [*][b]Saved presets[/b] — save, rename and delete your own for speed and range. Saving with a saved preset selected asks "You're saving over <name>. Continue?" and overwrites it; otherwise Save adds a new entry. Built-in names are reserved.
-[*][b]Speed presets[/b] (speed cm/s, boost, accel/decel cm/s²) — Stock game's own (400), 2x, 4000 · Better Construction 2500, 2.5x, 5000 · Agile Builder 4000, 3x, 10000 · Long Haul 5000, 3x, 12000 · Ludicrous Speed 8000, 4x, 20000
+[*][b]Speed presets[/b] (speed cm/s, boost, accel/decel cm/s²) — Stock game's own (400), 2x, 4000 · Light Construction 1450, 2.25x, 4500 · Better Construction 2500, 2.5x, 5000 · Agile Builder 4000, 3x, 10000 · Long Haul 5000, 3x, 12000 · Ludicrous Speed 8000, 4x, 20000
 [*][b]Range presets[/b] (max radius / max height cm) — Stock game's own (4000 / 3500) · Better Construction 10000 / 5000 · Agile Builder 20000 / 10000 · Map-wide 1000000 / 500000
 [/list]
 
@@ -72,12 +72,30 @@ Look at a building and press [b]E[/b] (rebindable on the ModLoader config page, 
 
 Hold the game's context interact key ([b]E[/b] by default, rebinds included) on a building or a logistics drone for as long as the game asks you to on foot, and it takes everything the target holds, as holding it does on foot. A short press stays the plain interact. ✦
 
+Turn on [b]Esc Opens Pause Menu In Drone Mode[/b] (off by default; ModLoader config page, Interaction) and [b]Esc[/b] in the drone opens the pause menu, and pauses as it does on foot, instead of recalling the drone; when the menu closes you are still in the drone, in the same spot. [b]Q[/b] still recalls it. ✦
+
+While you fly with a new building in hand, [b]Q[/b] or [b]B[/b] ends the placement and you stay in the drone, where the game would have ended the drone. Moving an existing building still snaps it back, [b]Q[/b] or [b]B[/b] with the building menu open closes the menu and keeps you in the drone. [b]Q[/b] with no menu open and nothing in hand still returns you to your character. ✦
+
+[size=4][b]Hotbar page from the drone ✦[/b][/size]
+
+Hold [b]Ctrl[/b] and scroll the mouse wheel while the drone is out to switch your hotbar page, as on foot, on game versions that have hotbar pages; the drone stays out. On game versions without hotbar pages, Ctrl and the wheel are left to the game. Ctrl is also the default Slow key, so the drone slows while you scroll; rebind Slow Key on the Config page if you prefer.
+
+[size=4][b]Hotbar slots from the drone and on foot ✦[/b][/size]
+
+While the drone is out, the number keys [b]1[/b] to [b]9[/b] and [b]0[/b] pick the slot of your current hotbar page with the same number, as on foot, and the mouse wheel (no Ctrl) steps to the next or previous slot, wrapping around the page. Only building slots are picked: the building goes into your hand ready to place and the drone stays out. Weapon, consumable and empty slots are skipped, since a weapon would end the drone and a consumable would be used on your parked character. Needs a game version with hotbar pages; on older game versions the keys and the wheel are left to the game.
+
+On foot, two options (both on by default, on the mod loader's Config page) extend the hotbar to every state: no mode, build mode and delete mode. Off, the input goes back to the game's own behaviour.
+[list]
+[*][b]Mouse Wheel Picks Hotbar On Foot[/b]: the wheel steps to the next or previous building or weapon slot and skips empty and consumable slots, so scrolling never uses an item. Off, the wheel cycles weapons as the game does. In build mode it replaces the wheel's building height and spline tangent actions while a pick is possible. In delete mode the first notch forward picks slot 1, or the next slot after it that can be picked, and picking leaves delete mode.
+[*][b]Number Keys Pick Hotbar On Foot[/b]: the number keys select the hotbar slot with the same number. The game already does this in no mode and in build mode, and BetterDrone leaves that to it, so an item is never used twice. In delete mode the game has no number-key binding, so BetterDrone picks building and weapon slots there.
+[/list]
+
 [size=4][b]The map from the drone ✦[/b][/size]
 
 [list]
 [*][b]Open it[/b] — press [b]M[/b] (rebindable on the ModLoader config page, Interaction) while you fly. It never opens over another menu.
 [*][b]Marker[/b] — the drone gets its own, a small reticle in your player-arrow colour that turns with the drone. The game's arrow stays at your parked body.
-[*][b]Follow[/b] — the map opens centred on the drone and keeps it centred as you fly. Zoom as usual; pan by hand to stop, and reopen the map to follow again. Recalling the drone puts the map back on your character, unless you moved it. No setting.
+[*][b]Follow[/b] — the map opens centred on the drone and keeps it centred as you fly. Zoom as usual; pan by hand to stop. Press the map centre key (C, the game's Center on player key; rebindable) to keep the map on your character, and again to follow the drone; reopening the map follows again too. Recalling the drone puts the map back on your character, unless you moved it.
 [*][b]Drone Reveals Map[/b] — off by default. Uncovers the map as you fly, at the walking radius and spacing. Saved with your game. Not inside the Forgotten Engine.
 [/list]
 
@@ -131,6 +149,8 @@ The file is generated on first launch. Edit it in game on the ModLoader config p
 [*]Interact Key — E
 [*]Map In Drone Mode — true
 [*]Map Key — M
+[*]Map Centre Key — C
+[*]Esc Opens Pause Menu In Drone Mode — false
 [*]Drone Reveals Map — false
 [*]Toggle Key — F10
 [*]Boost Key — Sprint (follows your Sprint key)
@@ -171,7 +191,7 @@ All values persist between game restarts.
 [*]Set your values in the BetterDrone panel (or edit the INI files above)
 [/list]
 
-Requires [url=https://www.nexusmods.com/starrupture/mods/89]AlienX's Mod Loader[/url], v1.23.0 or later (plugin interface v75).
+Requires [url=https://www.nexusmods.com/starrupture/mods/89]AlienX's Mod Loader[/url] 1.24.0 or newer. The hotbar parts (the number keys and the wheel picking hotbar items, and the Ctrl+wheel hotbar page) also need a game version with hotbar pages.
 
 [line]
 
