@@ -138,8 +138,8 @@ Config is stored in `Plugins\config\BetterDrone.ini` and is generated on first l
 | `[Interaction]` | `Map Key` | `M` | Match your game's map key |
 | `[Interaction]` | `Map Centre Key` | `C` | Match your game's Center on player key |
 | `[Interaction]` | `Esc Opens Pause Menu In Drone Mode` | `false` | Esc opens the pause menu in the drone instead of recalling it |
-| `[Interaction]` | `Number Keys Pick Hotbar On Foot` | `true` | The number keys select the hotbar on foot in every state |
-| `[Interaction]` | `Mouse Wheel Picks Hotbar On Foot` | `true` | The wheel steps through building and weapon slots on foot instead of cycling weapons |
+| `[Interaction]` | `Number Keys Pick Hotbar On Foot` | `true` | The number keys select the hotbar on foot in every state. Arrives with the upcoming game update and does nothing on the current game version |
+| `[Interaction]` | `Mouse Wheel Picks Hotbar On Foot` | `true` | The wheel steps through building and weapon slots on foot instead of cycling weapons. Arrives with the upcoming game update and does nothing on the current game version |
 | `[Interaction]` | `Drone Reveals Map` | `false` | Flying uncovers the map |
 | `[Controls]` | `Toggle Key` | `F10` | Panel (BetterCheats' default too) |
 | `[Controls]` | `Boost Key` | `Sprint` | Held to boost; `Sprint` follows your Sprint key |
