@@ -146,6 +146,11 @@ namespace
     int32_t g_lastSlot = -1;
     int32_t g_lastPage = -1;
 
+    // True while g_lastSlot is only the point the wheel starts from (delete mode
+    // is entered at one) and nothing was picked there, so the first wheel result
+    // is picked even when it is that slot. Tick only.
+    bool g_lastSlotIsStart = false;
+
     // The foot mode of the last tick, to see delete mode being entered. Tick only.
     FootMode g_lastFootMode = FootMode::Other;
 
@@ -349,7 +354,8 @@ namespace
             return false;
 
         subsystem->ProcessEvent(g_activateItem, &index);
-        g_lastSlot = index;
+        g_lastSlot        = index;
+        g_lastSlotIsStart = false;
         return true;
     }
 
@@ -466,6 +472,7 @@ namespace
         g_slotWheel.Reset();
         g_pendingSlot.store(-1, std::memory_order_relaxed);
         g_lastSlot = -1;
+        g_lastSlotIsStart = false;
         g_lastPage = -1;
         g_lastFootMode = FootMode::Other;
     }
@@ -536,14 +543,17 @@ namespace
         {
             g_lastPage = page.page;
             g_lastSlot = -1;
+            g_lastSlotIsStart = false;
         }
 
-        // Entering delete mode restarts the wheel at slot 2, so its first notch
-        // up lands on slot 1, or the previous pickable one before it, and a notch
-        // down steps on to slot 3.
+        // Entering delete mode restarts the wheel at slot 2 without picking it, so
+        // its first notch up lands on slot 1, or the previous pickable one before
+        // it, and a notch down steps on to slot 3. When slot 2 is the only one that
+        // can be picked, the first notch picks it.
         if (mode == FootMode::Deconstruct && g_lastFootMode != FootMode::Deconstruct)
         {
-            g_lastSlot = 2;
+            g_lastSlot        = 2;
+            g_lastSlotIsStart = true;
             g_slotWheel.Reset();
         }
         g_lastFootMode = mode;
@@ -567,7 +577,10 @@ namespace
         if (onFoot && footDigit >= 0 && footDigit < kSlotsPerPage
             && NowMs() - g_footSlotMs.load(std::memory_order_relaxed) < kFootSlotFreshMs
             && IsPickable(page, footDigit, SlotFilter::BuildingOrWeapon))
-            g_lastSlot = footDigit;
+        {
+            g_lastSlot        = footDigit;
+            g_lastSlotIsStart = false;
+        }
         if (digit >= 0 && digit < kSlotsPerPage
             && (inDrone || (onFoot && footKeys && mode == FootMode::Deconstruct)))
         {
@@ -595,7 +608,7 @@ namespace
                 break;
             target = next;
         }
-        if (target != g_lastSlot)
+        if (notches != 0 && (target != g_lastSlot || g_lastSlotIsStart))
             PickSlot(subsystem, page, target, wheelFilter);
     }
 }

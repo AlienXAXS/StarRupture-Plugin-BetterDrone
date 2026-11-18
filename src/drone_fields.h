@@ -111,7 +111,7 @@ namespace DroneFields
 	// no building in hand and not an unreadable member.
 	inline bool BuildingHeldReadable()
 	{
-		return ControllerBuilding.offset >= 0 && HelperActor.offset >= 0;
+		return PluginMap::IsResolved(ControllerBuilding) && PluginMap::IsResolved(HelperActor);
 	}
 
 	// A scene component's world transform. ComponentToWorld is an engine member
