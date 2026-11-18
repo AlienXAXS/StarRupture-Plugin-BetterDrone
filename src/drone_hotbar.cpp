@@ -43,11 +43,15 @@ namespace
     // One wheel notch, as the message reports it (WHEEL_DELTA).
     constexpr int32_t kRawPerNotch = 120;
 
-    // Wheel forward (away from the user) is the next page or slot and wheel back
-    // the previous one, the direction of the game's own plain wheel (forward is
-    // the next weapon). The game's binding for its page inputs is in its data and
-    // is not read.
+    // Wheel forward (away from the user) is the next slot and wheel back the
+    // previous one, the direction of the game's own plain wheel (forward is the
+    // next weapon).
     constexpr bool kForwardIsNext = true;
+
+    // The page wheel follows the game's on-foot Ctrl+wheel, where wheel forward
+    // is the previous page. The game's binding for its page inputs is in its data
+    // and is not read.
+    constexpr bool kPageForwardIsNext = false;
 
     // A lookup that misses is repeated this often at the earliest, since it
     // scans the game's objects.
@@ -495,7 +499,7 @@ namespace
             {
                 // A page that is not there (no subsystem yet, no pages) drops the
                 // rest of the flick instead of retrying it on every notch.
-                if (!SwitchPage(subsystem, (notches > 0) == kForwardIsNext))
+                if (!SwitchPage(subsystem, (notches > 0) == kPageForwardIsNext))
                 {
                     g_pageWheel.Reset();
                     break;
