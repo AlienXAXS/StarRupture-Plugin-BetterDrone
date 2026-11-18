@@ -107,6 +107,13 @@ namespace DroneFields
 	inline auto ControllerBuilding = DRONE_FIELD(ACrPlayerControllerBase, BuildingComponent);
 	inline auto HelperActor        = DRONE_FIELD(UCrBuildingComponent, HelperActor);
 
+	// True when both members resolved on this build, so "no helper actor" means
+	// no building in hand and not an unreadable member.
+	inline bool BuildingHeldReadable()
+	{
+		return ControllerBuilding.offset >= 0 && HelperActor.offset >= 0;
+	}
+
 	// A scene component's world transform. ComponentToWorld is an engine member
 	// the generated SDK does not name, and an FTransform keeps its translation
 	// in a SIMD register, so the translation is a native row of its own at the

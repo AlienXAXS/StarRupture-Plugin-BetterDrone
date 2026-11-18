@@ -398,6 +398,19 @@ namespace
         return *state == g_controlDeconstruct ? FootMode::Deconstruct : FootMode::Other;
     }
 
+    // True while a building is being placed or moved, in the drone or on foot in
+    // build mode: the game uses the plain wheel then (rotate, height, distance),
+    // so the pick leaves it alone. Build mode with the menu open and nothing
+    // selected is not placing. A build where the building component cannot be
+    // read counts as placing, which leaves the wheel to the game there. Tick
+    // only.
+    bool PlacingBuilding(SDK::ACrPlayerControllerBase* pc, bool inDrone, FootMode mode)
+    {
+        if (!inDrone && mode != FootMode::Build)
+            return false;
+        return !DroneFields::BuildingHeldReadable() || BuildingHeld(pc);
+    }
+
     // The slot a number key is: key N is slot N, as the game's own
     // GetHotbarItemIndex has it, and 0 is slot 0. Zero to Nine are contiguous
     // in the enum, which the subtraction and the registration loop rely on.
@@ -433,7 +446,8 @@ namespace
         // Ctrl is the page, no modifier at all is the slot, in the drone and on
         // foot. A notch is consumed only when the tick can use it, so neither the
         // game nor a wheel handler registered after this one (the minimap zoom)
-        // also sees it.
+        // also sees it. While a building is being placed the tick says it cannot,
+        // and the plain wheel is the game's.
         if ((event->modifiers & PluginWheelMod_Ctrl) != 0)
         {
             if (!g_canPage.load(std::memory_order_relaxed))
@@ -537,12 +551,14 @@ namespace
         }
         g_lastFootMode = mode;
 
-        // The wheel is taken only on a page that has a slot to go to. On foot it
-        // goes to buildings and weapons, in the drone to buildings only.
+        // The wheel is taken only on a page that has a slot to go to, and never
+        // while a building is being placed. On foot it goes to buildings and
+        // weapons, in the drone to buildings only.
         const SlotFilter wheelFilter = inDrone ? SlotFilter::Building : SlotFilter::BuildingOrWeapon;
-        const bool anyPickable = FindPickableSlot(page, -1, true, wheelFilter) >= 0;
-        g_canSelect.store(inDrone && anyPickable, std::memory_order_relaxed);
-        g_canSelectFoot.store(onFoot && footWheel && anyPickable, std::memory_order_relaxed);
+        const bool placing   = PlacingBuilding(pc, inDrone, mode);
+        const bool wheelOpen = !placing && FindPickableSlot(page, -1, true, wheelFilter) >= 0;
+        g_canSelect.store(inDrone && wheelOpen, std::memory_order_relaxed);
+        g_canSelectFoot.store(onFoot && footWheel && wheelOpen, std::memory_order_relaxed);
 
         // The number keys are the game's own on foot in most states, and a
         // key callback cannot consume the key, so BD picks nothing there but
@@ -560,6 +576,13 @@ namespace
         {
             // The page's slots are not read again after a game call.
             PickSlot(subsystem, page, digit, wheelFilter);
+            g_slotWheel.Reset();
+            return;
+        }
+
+        // Notches queued before the placement began are dropped.
+        if (placing)
+        {
             g_slotWheel.Reset();
             return;
         }

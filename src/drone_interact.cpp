@@ -1085,14 +1085,6 @@ namespace
         return (g_uiState.load(std::memory_order_relaxed) & PLUGIN_UI_BUILD_MENU) != 0;
     }
 
-    // A building is in hand: the controller's building component has its
-    // helper actor. Valid for this call only.
-    bool BuildingHeld(SDK::ACrPlayerControllerBase* pc)
-    {
-        SDK::UCrBuildingComponent* building = DroneFields::ValueOr(DroneFields::ControllerBuilding, pc);
-        return building && DroneFields::ValueOr(DroneFields::HelperActor, building);
-    }
-
     // True when the building tool is still equipped. The unequip is what ends
     // the drone from PostEquip, so a call that finds it gone must go through:
     // vetoing it would leave the drone without its tool.
@@ -1312,6 +1304,12 @@ SDK::ACrCharacterPlayerBase* LocalPlayerCharacter()
 SDK::ACrPlayerControllerBase* LocalPlayerController()
 {
     return LocalController();
+}
+
+bool BuildingHeld(SDK::ACrPlayerControllerBase* pc)
+{
+    SDK::UCrBuildingComponent* building = DroneFields::ValueOr(DroneFields::ControllerBuilding, pc);
+    return building && DroneFields::ValueOr(DroneFields::HelperActor, building);
 }
 
 SDK::UCrUW_MapMenu* ActiveLocalMap()

@@ -95,6 +95,11 @@ bool IsLocalPlayerInDrone();
 // Valid for the current tick only.
 SDK::ACrPlayerControllerBase* LocalPlayerController();
 
+// Game thread only. A building is in hand: the controller's building component
+// has its helper actor, the ghost being placed or moved. False too when the
+// controller or either member is not there. Read each time, never kept.
+bool BuildingHeld(SDK::ACrPlayerControllerBase* pc);
+
 // Game thread only. The map, if it is the active widget on the local player's
 // menu layer, whether it was opened from drone mode or on foot. Valid for the
 // current tick only.
