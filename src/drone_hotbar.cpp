@@ -43,15 +43,11 @@ namespace
     // One wheel notch, as the message reports it (WHEEL_DELTA).
     constexpr int32_t kRawPerNotch = 120;
 
-    // Wheel forward (away from the user) is the next slot and wheel back the
-    // previous one, the direction of the game's own plain wheel (forward is the
-    // next weapon).
-    constexpr bool kForwardIsNext = true;
-
-    // The page wheel follows the game's on-foot Ctrl+wheel, where wheel forward
-    // is the previous page. The game's binding for its page inputs is in its data
-    // and is not read.
-    constexpr bool kPageForwardIsNext = false;
+    // The game binds wheel up to the previous weapon and wheel down to the next
+    // one, and Ctrl and the wheel on foot switch the page the same way. Slots and
+    // pages follow it: wheel forward (up) is the previous, wheel back (down) the
+    // next. The game's binding for its page inputs is in its data and is not read.
+    constexpr bool kForwardIsNext = false;
 
     // A lookup that misses is repeated this often at the earliest, since it
     // scans the game's objects.
@@ -513,7 +509,7 @@ namespace
             {
                 // A page that is not there (no subsystem yet, no pages) drops the
                 // rest of the flick instead of retrying it on every notch.
-                if (!SwitchPage(subsystem, (notches > 0) == kPageForwardIsNext))
+                if (!SwitchPage(subsystem, (notches > 0) == kForwardIsNext))
                 {
                     g_pageWheel.Reset();
                     break;
@@ -542,11 +538,12 @@ namespace
             g_lastSlot = -1;
         }
 
-        // Entering delete mode restarts the wheel at slot 0, so its first notch
-        // forward lands on slot 1, or the next pickable one after it.
+        // Entering delete mode restarts the wheel at slot 2, so its first notch
+        // up lands on slot 1, or the previous pickable one before it, and a notch
+        // down steps on to slot 3.
         if (mode == FootMode::Deconstruct && g_lastFootMode != FootMode::Deconstruct)
         {
-            g_lastSlot = 0;
+            g_lastSlot = 2;
             g_slotWheel.Reset();
         }
         g_lastFootMode = mode;
