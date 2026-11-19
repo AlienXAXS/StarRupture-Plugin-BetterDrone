@@ -3,6 +3,18 @@
 #include <CoreUObject_classes.hpp>
 #include <cstdint>
 
+// True when the engine has marked the object as garbage or started destroying
+// it. It can still be in memory, and a pointer to it still reads fine, but the
+// game no longer treats it as alive. Null is not dead. Game thread only.
+inline bool IsDead(const SDK::UObject* obj)
+{
+    constexpr uint32_t kDeadFlags =
+        static_cast<uint32_t>(SDK::EObjectFlags::BeginDestroyed) |
+        static_cast<uint32_t>(SDK::EObjectFlags::FinishDestroyed) |
+        static_cast<uint32_t>(SDK::EObjectFlags::MirroredGarbage);
+    return obj && (static_cast<uint32_t>(obj->Flags) & kDeadFlags);
+}
+
 // A UObject reference that is safe to keep past the tick it was read on.
 //
 // A raw UObject* held across ticks can dangle. The object may be garbage
@@ -53,11 +65,7 @@ public:
         if (m_obj->Class != m_class)
             return nullptr;
 
-        constexpr uint32_t kDeadFlags =
-            static_cast<uint32_t>(SDK::EObjectFlags::BeginDestroyed) |
-            static_cast<uint32_t>(SDK::EObjectFlags::FinishDestroyed) |
-            static_cast<uint32_t>(SDK::EObjectFlags::MirroredGarbage);
-        if (static_cast<uint32_t>(m_obj->Flags) & kDeadFlags)
+        if (IsDead(m_obj))
             return nullptr;
 
         return m_obj;

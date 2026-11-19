@@ -361,6 +361,21 @@ namespace
                  movedBody ? ", ranged from the drone" : "");
     }
 
+    // The press or release skipped because its target is gone. Shares the
+    // one-a-second limit with the press line above.
+    void LogTargetDestroyed(SDK::ACrPlayerControllerBase* pc)
+    {
+        const uint64_t now = GetTickCount64();
+        if (now - g_lastTargetLogMs < 1000)
+            return;
+
+        g_lastTargetLogMs = now;
+
+        SDK::AActor* target = DroneFields::ValueOr(DroneFields::CurrentInteractableActor, pc);
+        LOG_INFO("DroneInteract: interact skipped: target destroyed (%s)",
+                 target ? target->Class->GetName().c_str() : "no target");
+    }
+
     // The drone camera to stand the body at while a press or hold reaches the
     // current target, or null when the target is ranged as it is. Only where
     // the gather is granted: a client also asks the server, which checks the
@@ -382,9 +397,21 @@ namespace
     // release alone. Cleared by the next plain press. Game thread only.
     bool g_holdRan = false;
 
+    // True when the target the game would interact with has been destroyed since
+    // the controller picked it. NativeOnInputInteract and ...Started take the
+    // target from CurrentInteractableActor without checking it is alive, and a
+    // building that went away while the key was held crashes the game when its
+    // UI opens. A null target is not destroyed: the game handles that itself.
+    // Game thread only, read on the tick, never kept.
+    bool TargetDestroyed(SDK::ACrPlayerControllerBase* pc)
+    {
+        return IsDead(DroneFields::ValueOr(DroneFields::CurrentInteractableActor, pc));
+    }
+
     // Mirrors UCrInputNativeInteract: press starts a held interaction, release
     // finishes it, and an interaction that never started falls through to the
-    // instant one.
+    // instant one. A destroyed target gets neither the press nor the instant
+    // interact; the release still runs Completed so nothing stays half open.
     void DispatchInteract(SDK::ACrPlayerControllerBase* pc, SDK::ACrCharacterPlayerBase* character,
                           bool press, bool release)
     {
@@ -395,8 +422,13 @@ namespace
         if (press)
         {
             g_holdRan = false;
-            LogPressTarget(pc, atDrone.has_value());
-            reinterpret_cast<InteractVoid_t>(g_addrInteractStarted)(pc);
+            if (TargetDestroyed(pc))
+                LogTargetDestroyed(pc);
+            else
+            {
+                LogPressTarget(pc, atDrone.has_value());
+                reinterpret_cast<InteractVoid_t>(g_addrInteractStarted)(pc);
+            }
         }
 
         if (release)
@@ -404,7 +436,12 @@ namespace
             // Completed is still called after a hold: it winds the press back.
             const bool handled = reinterpret_cast<InteractBool_t>(g_addrInteractCompleted)(pc);
             if (!handled && !g_holdRan)
-                reinterpret_cast<InteractVoid_t>(g_addrInteract)(pc);
+            {
+                if (TargetDestroyed(pc))
+                    LogTargetDestroyed(pc);
+                else
+                    reinterpret_cast<InteractVoid_t>(g_addrInteract)(pc);
+            }
             g_holdRan = false;
         }
     }
