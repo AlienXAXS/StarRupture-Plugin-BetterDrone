@@ -126,7 +126,7 @@ namespace
     // run", so the callback passes a notch on when it cannot, without touching
     // the game's objects.
     std::atomic<bool> g_canPage{ false };
-    std::atomic<bool> g_canSelect{ false };     // in the drone, plain wheel
+    std::atomic<bool> g_canSelect{ false };     // in the drone, wheel pick on
     std::atomic<bool> g_canSelectFoot{ false }; // on foot, wheel pick on
     WheelNotches      g_pageWheel;
     WheelNotches      g_slotWheel;
@@ -448,8 +448,8 @@ namespace
         // Ctrl is the page, no modifier at all is the slot, in the drone and on
         // foot. A notch is consumed only when the tick can use it, so neither the
         // game nor a wheel handler registered after this one (the minimap zoom)
-        // also sees it. While a building is being placed the tick says it cannot,
-        // and the plain wheel is the game's.
+        // also sees it. With the wheel option off, or while a building is being
+        // placed, the tick says it cannot, and the plain wheel is the game's.
         if ((event->modifiers & PluginWheelMod_Ctrl) != 0)
         {
             if (!g_canPage.load(std::memory_order_relaxed))
@@ -479,11 +479,14 @@ namespace
 
     void OnTick(float deltaTime)
     {
-        // The drone, or on foot with one of the two on-foot options on. The two
-        // reads are the loader's in-memory config.
+        // The drone, or on foot with one of the two on-foot options on. The
+        // reads are the loader's in-memory config. The drone's wheel option
+        // gates the plain wheel only: the number keys and Ctrl and the wheel
+        // work in the drone either way.
         const bool inDrone    = IsLocalPlayerInDrone();
         const bool footKeys   = g_selectOn && DroneConfig::Config::ReadHotbarKeysOnFoot();
         const bool footWheel  = g_selectOn && DroneConfig::Config::ReadHotbarWheelOnFoot();
+        const bool droneWheel = g_selectOn && DroneConfig::Config::ReadHotbarWheelInDrone();
         SDK::ACrPlayerControllerBase* pc = inDrone || g_selectOn ? LocalPlayerController() : nullptr;
         const FootMode mode   = !inDrone && (footKeys || footWheel) ? ReadFootMode(pc) : FootMode::Other;
         const bool onFoot     = mode != FootMode::Other && WeaponSlotTypeResolved();
@@ -558,13 +561,14 @@ namespace
         }
         g_lastFootMode = mode;
 
-        // The wheel is taken only on a page that has a slot to go to, and never
-        // while a building is being placed. On foot it goes to buildings and
-        // weapons, in the drone to buildings only.
+        // The wheel is taken only with its option on (the drone's or the on-foot
+        // one), on a page that has a slot to go to, and never while a building
+        // is being placed. On foot it goes to buildings and weapons, in the
+        // drone to buildings only.
         const SlotFilter wheelFilter = inDrone ? SlotFilter::Building : SlotFilter::BuildingOrWeapon;
         const bool placing   = PlacingBuilding(pc, inDrone, mode);
         const bool wheelOpen = !placing && FindPickableSlot(page, -1, true, wheelFilter) >= 0;
-        g_canSelect.store(inDrone && wheelOpen, std::memory_order_relaxed);
+        g_canSelect.store(inDrone && droneWheel && wheelOpen, std::memory_order_relaxed);
         g_canSelectFoot.store(onFoot && footWheel && wheelOpen, std::memory_order_relaxed);
 
         // The number keys are the game's own on foot in most states, and a
@@ -590,8 +594,9 @@ namespace
             return;
         }
 
-        // Notches queued before the placement began are dropped.
-        if (placing)
+        // Notches queued before the placement began, or before the wheel option
+        // was turned off, are dropped.
+        if (placing || !(inDrone ? droneWheel : footWheel))
         {
             g_slotWheel.Reset();
             return;
@@ -636,9 +641,9 @@ bool InitDroneHotbar(IPluginSelf* self, bool page, bool select)
     if (page)
         LOG_INFO("DroneHotbar: Ctrl + mouse wheel switches the hotbar page in drone mode");
     if (select)
-        LOG_INFO("DroneHotbar: the number keys and the mouse wheel pick a building from the hotbar in drone mode, "
-                 "and on foot (each one an option) the number keys pick a slot in delete mode and the wheel steps "
-                 "through the building and weapon slots");
+        LOG_INFO("DroneHotbar: the number keys pick a building from the hotbar in drone mode, and the mouse wheel "
+                 "does too when its option is on; on foot (each one an option) the number keys pick a slot in "
+                 "delete mode and the wheel steps through the building and weapon slots");
     return true;
 }
 

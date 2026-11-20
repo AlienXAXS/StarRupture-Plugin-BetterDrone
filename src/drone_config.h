@@ -47,6 +47,7 @@ namespace DroneConfig
         static bool ReadDroneRevealsMap();
         static bool ReadHotbarKeysOnFoot();
         static bool ReadHotbarWheelOnFoot();
+        static bool ReadHotbarWheelInDrone();
         static void ReadToggleKey(char* outBuffer, int bufferSize);
         static void ReadPrevPresetKey(char* outBuffer, int bufferSize);
         static void ReadNextPresetKey(char* outBuffer, int bufferSize);
