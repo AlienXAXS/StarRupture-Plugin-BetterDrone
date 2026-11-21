@@ -16,6 +16,11 @@ namespace DroneAudio
     // Drops every cached component. Call when a world ends, since nothing
     // found in it outlives it.
     void OnWorldEnd();
+
+    // Puts every drone and station sound back to the game's own volume and
+    // drops the caches, for the moment the audio section is turned off by the
+    // host. Game thread only.
+    void ResetVolumes();
     void Tick(float deltaSeconds);
     void ApplySavedConfig();
 
@@ -28,5 +33,9 @@ namespace DroneAudio
     // falloff, so it is heard however far the drone is from the parked body.
     // Tick on the game thread; Shutdown puts the game's own settings back.
     void TickAnnouncer();
+
+    // Puts the game's own falloff back at once, for the moment the announcer
+    // section is turned off by the host. Game thread only.
+    void RestoreAnnouncer();
     void ShutdownAnnouncer();
 }

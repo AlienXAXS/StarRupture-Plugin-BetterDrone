@@ -308,6 +308,21 @@ namespace DroneAudio
         DropCaches();
     }
 
+    void ResetVolumes()
+    {
+        for (const CachedDrone& cached : g_cachedDrones)
+        {
+            SetComponentVolume(cached.idle, 1.0f);
+            SetComponentVolume(cached.movement, 1.0f);
+            SetComponentVolume(cached.rotation, 1.0f);
+        }
+        for (const ObjectRef<SDK::UAudioComponent>& audio : g_cachedStationComponents)
+            SetComponentVolume(audio, 1.0f);
+
+        // A later re-enable rescans from scratch instead of trusting these.
+        DropCaches();
+    }
+
     void ApplySavedConfig()
     {
         ReadAudioConfig();
@@ -396,6 +411,11 @@ namespace DroneAudio
             RestoreFalloff(tpp);
         else
             RemoveFalloff(tpp);
+    }
+
+    void RestoreAnnouncer()
+    {
+        RestoreAllFalloff();
     }
 
     void ShutdownAnnouncer()
