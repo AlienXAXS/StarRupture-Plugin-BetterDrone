@@ -684,6 +684,23 @@ namespace
         }
     }
 
+    // Game thread. Puts the map back where the game had it. A fault here
+    // switches following off until RELOAD, as it does in the tick.
+    void PutMapBack()
+    {
+        if (!g_followFailed)
+        {
+            if (!EndFollowGuarded())
+            {
+                g_followFailed = true;
+                ForgetFollow();
+                LOG_ERROR("DroneMapFollow: access violation while putting the map back");
+            }
+        }
+        else
+            ForgetFollow();
+    }
+
     void TickImpl()
     {
         if (!IsLocalPlayerInDrone())
@@ -795,6 +812,11 @@ void ShutdownDroneMapMarker(IPluginSelf* self)
     g_overlay.Unregister(self);
 }
 
+void HideDroneMapMarker()
+{
+    Hide();
+}
+
 void TickDroneMapMarker(float)
 {
     if (g_failed || !g_overlay.IsRegistered())
@@ -840,17 +862,16 @@ void ShutdownDroneMapFollow(IPluginSelf* self)
 
     // Game objects are touched only on the game thread, which is where shutdown
     // runs when it comes from RELOAD; anywhere else the map is left as it is.
-    if (OnGameThread() && !g_followFailed)
-    {
-        if (!EndFollowGuarded())
-        {
-            g_followFailed = true;
-            ForgetFollow();
-            LOG_ERROR("DroneMapFollow: access violation while putting the map back at shutdown");
-        }
-    }
+    if (OnGameThread())
+        PutMapBack();
     else
         ForgetFollow();
+}
+
+void StopDroneMapFollow()
+{
+    g_centrePress.store(false, std::memory_order_relaxed);
+    PutMapBack();
 }
 
 void TickDroneMapFollow()

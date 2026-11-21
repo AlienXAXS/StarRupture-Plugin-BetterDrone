@@ -24,6 +24,10 @@ void ShutdownDroneMapMarker(IPluginSelf* self);
 // Game thread only, every engine tick.
 void TickDroneMapMarker(float deltaSeconds);
 
+// Game thread only. Hides the marker, for the moment the section is turned off
+// by the host.
+void HideDroneMapMarker();
+
 // Resolves the game's CenterOnLocation for the follow. Call in OnPluginLoadHooks.
 void ResolveDroneMapFollow(IPluginSelf* self, IPluginHookScanner* scanner);
 
@@ -32,6 +36,11 @@ void InitDroneMapFollow(IPluginSelf* self);
 
 // Game thread only, every engine tick.
 void TickDroneMapFollow();
+
+// Game thread only. Puts the map back where the game had it and drops a pending
+// Map Centre Key press, for the moment the section is turned off by the host.
+// The key stays registered.
+void StopDroneMapFollow();
 
 // Puts the map back where the game had it, if it can be touched from this
 // thread, and unregisters the Map Centre Key. Call from PluginShutdown.
