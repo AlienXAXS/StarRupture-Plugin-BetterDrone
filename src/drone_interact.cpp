@@ -453,14 +453,15 @@ namespace
         }
     }
 
+    // The gate's reason when the host has the section off. Compared by pointer.
+    constexpr const char* kGateHostOff = "interaction in drone mode is turned off by the host";
+
     // Why an interact cannot go to this controller's drone right now, or null
     // when it can, with the character it would act for. Spelled out rather
     // than reusing DroneCharacter() so a keypress that goes nowhere says which
     // condition stopped it. Every one of these is a state the player can be in
     // legitimately, so silence is indistinguishable from the key never
     // arriving at all -- which is the report this has to answer.
-    constexpr const char* kGateHostOff = "interaction in drone mode is turned off by the host";
-
     const char* InteractGate(SDK::ACrPlayerControllerBase* pc, SDK::ACrCharacterPlayerBase*& character)
     {
         if (!pc)
@@ -667,9 +668,10 @@ namespace
             if (gate == kGateHostOff && release && g_pressOpen && pc->Pawn == static_cast<SDK::APawn*>(character))
             {
                 reinterpret_cast<InteractBool_t>(g_addrInteractCompleted)(pc);
-                g_holdRan   = false;
-                g_pressOpen = false;
+                g_holdRan = false;
             }
+            if (release)
+                g_pressOpen = false;
             LogGateOnce(gate);
             return;
         }
@@ -1282,8 +1284,9 @@ namespace
         }
 
         // Esc with "Esc Opens Pause Menu In Drone Mode" on opens the pause
-        // menu instead, when this cancel is that press.
-        if (DroneEscPauseTakeCancel(character))
+        // menu instead, when this cancel is that press. With the building menu
+        // up and its section off, the cancel is the game's, which closes it.
+        if ((DroneFields::Features::BuildMenu.On() || !BuildMenuUp()) && DroneEscPauseTakeCancel(character))
             return;
 
         // A new building in hand: end the placement and leave the tool, and
