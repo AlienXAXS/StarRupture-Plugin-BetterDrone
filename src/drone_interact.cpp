@@ -154,7 +154,7 @@ namespace
 
         // Checked last: this runs from a targeting tick, and the pointer reads
         // above rule out the common case without touching the config at all.
-        return DroneConfig::Config::ReadInteractInDroneMode() ? character : nullptr;
+        return DroneFields::Features::Interaction.On() && DroneConfig::Config::ReadInteractInDroneMode() ? character : nullptr;
     }
 
     SDK::ACrPlayerControllerBase* LocalController()
@@ -464,6 +464,9 @@ namespace
         if (!DroneFields::InDrone(character))
             return "character is not in drone mode";
 
+        if (!DroneFields::Features::Interaction.On())
+            return "interaction in drone mode is turned off by the host";
+
         if (!DroneConfig::Config::ReadInteractInDroneMode())
             return "'Interact In Drone Mode' is disabled in the config";
 
@@ -630,7 +633,15 @@ namespace
     void OnTick(float)
     {
         if (g_holdOn)
-            HoldTick(LocalController());
+        {
+            if (DroneFields::Features::HoldTakeAll.On())
+                HoldTick(LocalController());
+            else
+            {
+                g_holdArmed = false;
+                g_holdTarget.Reset();
+            }
+        }
 
         const bool press   = g_pendingPress.exchange(false);
         const bool release = g_pendingRelease.exchange(false);
@@ -854,7 +865,7 @@ namespace
     // GC.
     void OnMapTick(float)
     {
-        const bool press = g_pendingMapPress.exchange(false);
+        const bool press = g_pendingMapPress.exchange(false) && DroneFields::Features::MapOpen.On();
         if (!press && !g_menuWasOpen.load(std::memory_order_relaxed))
             return;
 
@@ -964,7 +975,7 @@ namespace
     // reveal skips too. Everything is looked up fresh each tick.
     void OnFogTick(float)
     {
-        if (!g_fogEnabled.load(std::memory_order_relaxed))
+        if (!g_fogEnabled.load(std::memory_order_relaxed) || !DroneFields::Features::MapReveal.On())
         {
             g_hasLastReveal = false;
             return;
