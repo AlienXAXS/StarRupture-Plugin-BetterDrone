@@ -24,6 +24,18 @@ static IPluginSelf* g_self = nullptr;
 
 IPluginSelf* GetSelf() { return g_self; }
 
+// Which sections PluginInit set up. A host rule can flip a section's On()
+// flag at any time, so PluginShutdown must undo what was done, not what On()
+// says now, and a section's tick must not run for a section whose Init never
+// did. Set when the section's Init was called, not on its return value: a
+// failed Init can leave a hook or keybind that its Shutdown has to remove.
+static struct InitRan
+{
+    bool audio = false, laser = false, mapMarker = false, speedometer = false;
+    bool interact = false, hotbar = false, map = false, mapFollow = false, fog = false;
+    bool buildMenu = false, escPause = false, limitsKeys = false;
+} s_ran;
+
 static std::atomic<DWORD> g_gameThreadId{ 0 };
 
 void NoteGameThread() { g_gameThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed); }
@@ -84,19 +96,19 @@ static void OnEngineTick(float deltaSeconds)
         OnDroneTick(deltaSeconds);
     TickDroneFloorGuard(deltaSeconds);
     TickDroneBodyAnchor();
-    if (DroneFields::Features::Audio.On())
+    if (s_ran.audio && DroneFields::Features::Audio.On())
         DroneAudio::Tick(deltaSeconds);
     if (DroneFields::Features::Announcer.On())
         DroneAudio::TickAnnouncer();
-    if (DroneFields::Features::MiningLaser.On())
+    if (s_ran.laser && DroneFields::Features::MiningLaser.On())
         TickDroneLaser(deltaSeconds);
     TickDroneMenuClose();
     TickDroneMenuOpen();
-    if (DroneFields::Features::MapMarker.On())
+    if (s_ran.mapMarker && DroneFields::Features::MapMarker.On())
         TickDroneMapMarker(deltaSeconds);
-    if (DroneFields::Features::MapFollow.On())
+    if (s_ran.mapFollow && DroneFields::Features::MapFollow.On())
         TickDroneMapFollow();
-    if (DroneFields::Features::Speedometer.On())
+    if (s_ran.speedometer && DroneFields::Features::Speedometer.On())
         TickDroneSpeedometer();
     TickDronePresetKeys();
 }
@@ -206,15 +218,27 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     SetDroneBodyAnchorEnabled(DroneConfig::Config::ReadKeepBodyLoaded());
     SetDroneBodyAnchorRadiusMeters(DroneConfig::Config::ReadBodyAreaRadius());
     if (DroneFields::Features::Audio.On())
+    {
+        s_ran.audio = true;
         DroneAudio::Initialize();
+    }
     InitGameSessionTracking(self);
     if (DroneFields::Features::MiningLaser.On())
+    {
+        s_ran.laser = true;
         InitDroneLaser(self);
+    }
     InitDroneUI(self);
     if (DroneFields::Features::MapMarker.On())
+    {
+        s_ran.mapMarker = true;
         InitDroneMapMarker(self);
+    }
     if (DroneFields::Features::Speedometer.On())
+    {
+        s_ran.speedometer = true;
         InitDroneSpeedometer(self);
+    }
     InitDronePresetKeys(self);
 
     self->hooks->Engine->RegisterOnInit(OnEngineInit);
@@ -223,21 +247,45 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
 
     InitWavePatch(DroneFields::Features::AlwaysAllow.On(), DroneFields::Features::WaveShelter.On());
     if (DroneFields::Features::Interaction.On())
+    {
+        s_ran.interact = true;
         InitDroneInteract();
-    if (DroneFields::Features::HotbarPage.On() || DroneFields::Features::HotbarSelect.On())
-        InitDroneHotbar(self, DroneFields::Features::HotbarPage.On(), DroneFields::Features::HotbarSelect.On());
+    }
+    const bool hotbarPage = DroneFields::Features::HotbarPage.On();
+    const bool hotbarSelect = DroneFields::Features::HotbarSelect.On();
+    if (hotbarPage || hotbarSelect)
+    {
+        s_ran.hotbar = true;
+        InitDroneHotbar(self, hotbarPage, hotbarSelect);
+    }
     if (DroneFields::Features::MapOpen.On())
+    {
+        s_ran.map = true;
         InitDroneMap();
+    }
     if (DroneFields::Features::MapFollow.On())
+    {
+        s_ran.mapFollow = true;
         InitDroneMapFollow(self);
+    }
     if (DroneFields::Features::MapReveal.On())
+    {
+        s_ran.fog = true;
         InitDroneFog();
+    }
     if (DroneFields::Features::BuildMenu.On())
+    {
+        s_ran.buildMenu = true;
         InitDroneBuildMenu();
+    }
     if (DroneFields::Features::EscPause.On())
+    {
+        s_ran.escPause = true;
         InitDroneEscPause(self);
+    }
     if (DroneFields::Features::Limits.On())
     {
+        s_ran.limitsKeys = true;
         RegisterBoostKey(self);
         RegisterSlowKey(self);
     }
@@ -255,36 +303,35 @@ extern "C" __declspec(dllexport) void PluginShutdown()
 {
     LOG_DEBUG("PluginShutdown: restoring CDO defaults and unregistering hooks");
 
-    if (DroneFields::Features::Limits.On())
+    if (s_ran.limitsKeys)
     {
         UnregisterBoostKey(g_self);
         UnregisterSlowKey(g_self);
     }
     ShutdownDroneBodyAnchor();
-    if (DroneFields::Features::MiningLaser.On())
+    if (s_ran.laser)
         ShutdownDroneLaser(g_self);
-    if (DroneFields::Features::Interaction.On())
+    if (s_ran.interact)
         ShutdownDroneInteract();
-    if (DroneFields::Features::HotbarPage.On() || DroneFields::Features::HotbarSelect.On())
+    if (s_ran.hotbar)
         ShutdownDroneHotbar(g_self);
-    if (DroneFields::Features::MapOpen.On())
+    if (s_ran.map)
         ShutdownDroneMap();
-    if (DroneFields::Features::MapReveal.On())
+    if (s_ran.fog)
         ShutdownDroneFog();
-    if (DroneFields::Features::BuildMenu.On())
+    if (s_ran.buildMenu)
         ShutdownDroneBuildMenu();
-    if (DroneFields::Features::EscPause.On())
+    if (s_ran.escPause)
         ShutdownDroneEscPause(g_self);
     ShutdownWavePatch();
-    if (DroneFields::Features::Audio.On())
+    if (s_ran.audio)
         DroneAudio::Shutdown();
-    if (DroneFields::Features::Announcer.On())
-        DroneAudio::ShutdownAnnouncer();
-    if (DroneFields::Features::MapFollow.On())
+    DroneAudio::ShutdownAnnouncer();
+    if (s_ran.mapFollow)
         ShutdownDroneMapFollow(g_self);
-    if (DroneFields::Features::MapMarker.On())
+    if (s_ran.mapMarker)
         ShutdownDroneMapMarker(g_self);
-    if (DroneFields::Features::Speedometer.On())
+    if (s_ran.speedometer)
         ShutdownDroneSpeedometer(g_self);
     ShutdownDronePresetKeys(g_self);
     ShutdownDroneUI(g_self);
@@ -306,6 +353,8 @@ extern "C" __declspec(dllexport) void PluginShutdown()
 
         g_self = nullptr;
     }
+
+    s_ran = InitRan{};
 }
 
 BOOL APIENTRY DllMain(HMODULE, DWORD, LPVOID)
