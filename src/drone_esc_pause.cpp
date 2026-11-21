@@ -73,8 +73,8 @@ namespace
     }
 
     // True when this handler call belongs to an Esc key press in the drone with
-    // the option on. Game thread. The config is read last, so a Q press or a
-    // press on foot never touches the INI.
+    // the option on and the host allowing it. Game thread. The config is read
+    // last, so a Q press or a press on foot never touches the INI.
     bool EscInDrone(const SDK::ACrPlayerControllerBase* controller)
     {
         const uint64_t at = g_escTick.load(std::memory_order_relaxed);
@@ -84,7 +84,7 @@ namespace
         if (!controller || controller != LocalPlayerController() || !IsLocalPlayerInDrone())
             return false;
 
-        return DroneConfig::Config::ReadEscPauseInDrone();
+        return DroneFields::Features::EscPause.On() && DroneConfig::Config::ReadEscPauseInDrone();
     }
 
     // Takes the Esc press that EscInDrone accepted: opens the pause menu the

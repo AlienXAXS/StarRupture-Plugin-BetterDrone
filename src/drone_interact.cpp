@@ -1178,7 +1178,8 @@ namespace
             return false;
 
         const bool handled = g_handledSeq.load(std::memory_order_relaxed) == g_pressSeq.load(std::memory_order_relaxed);
-        if (!handled && !BuildMenuUp() && !(g_placementCancelOn && BuildingHeld(pc)))
+        if (!handled && !(DroneFields::Features::BuildMenu.On() && BuildMenuUp())
+            && !(g_placementCancelOn && DroneFields::Features::PlacementCancel.On() && BuildingHeld(pc)))
             return false;
 
         return ToolStillOut(player);
@@ -1224,7 +1225,7 @@ namespace
     // Valid for this call only.
     SDK::UCrUW_BuildingMenu* DroneBuildMenu(void* character, SDK::ACrPlayerControllerBase* pc)
     {
-        if (!BuildMenuUp())
+        if (!DroneFields::Features::BuildMenu.On() || !BuildMenuUp())
             return nullptr;
 
         if (!character || PilotingCharacter(pc) != character)
@@ -1288,7 +1289,7 @@ namespace
         // A new building in hand: end the placement and leave the tool, and
         // so the drone, where they are. A move in progress still snaps back
         // in the original.
-        if (g_placementCancelOn)
+        if (g_placementCancelOn && DroneFields::Features::PlacementCancel.On())
         {
             if (PlacingNewBuilding(character, pc))
             {
