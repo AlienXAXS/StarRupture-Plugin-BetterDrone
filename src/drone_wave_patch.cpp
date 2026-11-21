@@ -97,7 +97,7 @@ static int DropDroneOnlyInteriors(SDK::ACrCharacterPlayerBase* character, Overla
 static void __fastcall Detour_CheckIfInInterior(void* thisPtr, OverlapList* overlaps)
 {
     auto* character = static_cast<SDK::ACrCharacterPlayerBase*>(thisPtr);
-    if (!character || !overlaps || !DroneFields::InDrone(character))
+    if (!DroneFields::Features::WaveShelter.On() || !character || !overlaps || !DroneFields::InDrone(character))
     {
         g_lastShelterLog = -1;
         g_originalInterior(thisPtr, overlaps);
@@ -125,7 +125,7 @@ static void __fastcall Detour_CheckIfInInterior(void* thisPtr, OverlapList* over
 
 static bool __fastcall Detour_CanBuildingDroneBeActive(void* thisPtr)
 {
-    if (DroneConfig::Config::ReadAlwaysAllowDrone())
+    if (DroneFields::Features::AlwaysAllow.On() && DroneConfig::Config::ReadAlwaysAllowDrone())
         return true;
 
     return g_original ? g_original(thisPtr) : false;
