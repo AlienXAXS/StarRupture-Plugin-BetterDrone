@@ -41,6 +41,24 @@ static struct InitRan
 // flag on every tick, so a flip either way is caught on the game thread.
 static bool s_limitsApplied = false;
 
+// Whether each section was on at the last tick, for the sections whose off
+// state has to put something back. Only the latch moves when a section comes
+// back on: its own tick applies its values again.
+static bool s_wasOnAudio = true, s_wasOnAnnouncer = true, s_wasOnLaser = true, s_wasOnMapMarker = true;
+static bool s_wasOnMapFollow = true, s_wasOnSpeedometer = true;
+
+// Game thread, from the tick. Calls restore on the tick a section that ran its
+// Init turns off; a section that did not run has nothing of ours to put back.
+static void FollowOff(bool ran, bool on, bool& wasOn, void (*restore)())
+{
+    if (!ran || on == wasOn)
+        return;
+
+    wasOn = on;
+    if (!on)
+        restore();
+}
+
 static std::atomic<DWORD> g_gameThreadId{ 0 };
 
 void NoteGameThread() { g_gameThreadId.store(GetCurrentThreadId(), std::memory_order_relaxed); }
@@ -86,6 +104,12 @@ static void OnEngineTick(float deltaSeconds)
         OnDroneTick(deltaSeconds);
     TickDroneFloorGuard(deltaSeconds);
     TickDroneBodyAnchor();
+    FollowOff(s_ran.audio, DroneFields::Features::Audio.On(), s_wasOnAudio, DroneAudio::ResetVolumes);
+    FollowOff(true, DroneFields::Features::Announcer.On(), s_wasOnAnnouncer, DroneAudio::RestoreAnnouncer);
+    FollowOff(s_ran.laser, DroneFields::Features::MiningLaser.On(), s_wasOnLaser, StopDroneLaser);
+    FollowOff(s_ran.mapMarker, DroneFields::Features::MapMarker.On(), s_wasOnMapMarker, HideDroneMapMarker);
+    FollowOff(s_ran.mapFollow, DroneFields::Features::MapFollow.On(), s_wasOnMapFollow, StopDroneMapFollow);
+    FollowOff(s_ran.speedometer, DroneFields::Features::Speedometer.On(), s_wasOnSpeedometer, HideDroneSpeedometer);
     if (s_ran.audio && DroneFields::Features::Audio.On())
         DroneAudio::Tick(deltaSeconds);
     if (DroneFields::Features::Announcer.On())
