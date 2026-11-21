@@ -983,6 +983,15 @@ namespace
             HideGameDigits(hud, which, false);
     }
 
+    // Gives the game its height digits back and hides our line for them. Safe to
+    // call every sample: each part returns at once when there is nothing to undo.
+    void ReleaseHeight(SDK::UCrUW_BuildingDroneHud* hud)
+    {
+        UnpinDigits(hud, Row::Height);
+        HideGameDigits(hud, Row::Height, false);
+        ShowLine(g_rows[1].line, false);
+    }
+
     // Shows the speed under the readout. False when it has to be drawn
     // beside the crosshair instead.
     bool ShowUnderReadout(SDK::ACrCharacterPlayerBase* character, const char* number, const char* unit, uint64_t now)
@@ -1044,9 +1053,12 @@ namespace
                 return false;
         }
 
+        // The height row is ours only while the host leaves its section on.
+        const bool heightOn = DroneFields::Features::SpeedometerHeight.On();
+
         // The digits take their fixed width first; their place is measured on
         // the next sample, once the game has laid them out again.
-        if (PinDigits(hud, Row::Distance) | PinDigits(hud, Row::Height))
+        if (PinDigits(hud, Row::Distance) | (heightOn && PinDigits(hud, Row::Height)))
             return true;
 
         // The game hides the readout (a cutscene, a collapsed HUD): the speed
@@ -1066,7 +1078,7 @@ namespace
         // Text larger than the room checked at attach could grow a panel
         // that sizes to its content: give the place up.
         if (Oversize(g_speedLine) || (Intact(g_rows[0].line) && Oversize(g_rows[0].line)) ||
-            (Intact(g_rows[1].line) && Oversize(g_rows[1].line)))
+            (heightOn && Intact(g_rows[1].line) && Oversize(g_rows[1].line)))
         {
             Detach();
             g_attachFailed = true;
@@ -1080,7 +1092,10 @@ namespace
 
         UpdateLine(g_speedLine, elems, panel, d, d.bottom, opacity, number, unit);
         ShowFeet(hud, Row::Distance, panel);
-        ShowFeet(hud, Row::Height, panel);
+        if (heightOn)
+            ShowFeet(hud, Row::Height, panel);
+        else
+            ReleaseHeight(hud);
         return true;
     }
 
@@ -1106,6 +1121,11 @@ void InitDroneSpeedometer(IPluginSelf* self)
 
     if (!g_overlay.Register(self, "BetterDrone Speedometer", &RenderSpeed))
         LOG_WARN("Speedometer: the loader would not register the overlay widget, the speedometer will not show.");
+}
+
+void HideDroneSpeedometer()
+{
+    HideAll();
 }
 
 void ShutdownDroneSpeedometer(IPluginSelf* self)

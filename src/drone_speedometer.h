@@ -20,3 +20,7 @@ void ShutdownDroneSpeedometer(IPluginSelf* self);
 // Game thread only. Call once per engine tick. Holds no raw UObject pointer
 // across ticks.
 void TickDroneSpeedometer();
+
+// Game thread only. Takes everything of ours out of the HUD and gives the game
+// its digits back, for the moment the section is turned off by the host.
+void HideDroneSpeedometer();
