@@ -784,27 +784,27 @@ void SetDroneLimitsActive(bool active)
 
 namespace
 {
-    bool g_limitKeysRegistered = false;
+    std::atomic<bool> g_limitKeysRegistered{ false };
 }
 
 bool LimitKeysRegistered()
 {
-    return g_limitKeysRegistered;
+    return g_limitKeysRegistered.load(std::memory_order_relaxed);
 }
 
 void RegisterLimitKeys(IPluginSelf* self)
 {
-    if (g_limitKeysRegistered || !self)
+    if (g_limitKeysRegistered.load(std::memory_order_relaxed) || !self)
         return;
 
-    g_limitKeysRegistered = true;
+    g_limitKeysRegistered.store(true, std::memory_order_relaxed);
     RegisterBoostKey(self);
     RegisterSlowKey(self);
 }
 
 void UnregisterLimitKeys(IPluginSelf* self)
 {
-    g_limitKeysRegistered = false;
+    g_limitKeysRegistered.store(false, std::memory_order_relaxed);
     UnregisterBoostKey(self);
     UnregisterSlowKey(self);
 }
