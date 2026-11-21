@@ -479,15 +479,33 @@ namespace
 
     void OnTick(float deltaTime)
     {
+        // What the host allows now, of what was hooked up at start. The
+        // callbacks never ask the host: they read the g_can* answers below, so
+        // a section turned off here leaves the wheel and the keys to the game
+        // from the next tick, and what was queued is dropped.
+        const bool pageOn   = g_pageOn && DroneFields::Features::HotbarPage.On();
+        const bool selectOn = g_selectOn && DroneFields::Features::HotbarSelect.On();
+        if (!pageOn)
+            g_pageWheel.Reset();
+        if (!pageOn && !selectOn)
+        {
+            g_canPage.store(false, std::memory_order_relaxed);
+            g_canSelect.store(false, std::memory_order_relaxed);
+            g_canSelectFoot.store(false, std::memory_order_relaxed);
+            g_footSlot.store(-1, std::memory_order_relaxed);
+            ResetState();
+            return;
+        }
+
         // The drone, or on foot with one of the two on-foot options on. The
         // reads are the loader's in-memory config. The drone's wheel option
         // gates the plain wheel only: the number keys and Ctrl and the wheel
         // work in the drone either way.
         const bool inDrone    = IsLocalPlayerInDrone();
-        const bool footKeys   = g_selectOn && DroneConfig::Config::ReadHotbarKeysOnFoot();
-        const bool footWheel  = g_selectOn && DroneConfig::Config::ReadHotbarWheelOnFoot();
-        const bool droneWheel = g_selectOn && DroneConfig::Config::ReadHotbarWheelInDrone();
-        SDK::ACrPlayerControllerBase* pc = inDrone || g_selectOn ? LocalPlayerController() : nullptr;
+        const bool footKeys   = selectOn && DroneConfig::Config::ReadHotbarKeysOnFoot();
+        const bool footWheel  = selectOn && DroneConfig::Config::ReadHotbarWheelOnFoot();
+        const bool droneWheel = selectOn && DroneConfig::Config::ReadHotbarWheelInDrone();
+        SDK::ACrPlayerControllerBase* pc = inDrone || selectOn ? LocalPlayerController() : nullptr;
         const FootMode mode   = !inDrone && (footKeys || footWheel) ? ReadFootMode(pc) : FootMode::Other;
         const bool onFoot     = mode != FootMode::Other && WeaponSlotTypeResolved();
         const bool found      = (inDrone || onFoot) && ResolveSubsystem();
@@ -501,7 +519,7 @@ namespace
         const bool ready = character && !DroneFields::Dead(character)
             && pc->Pawn == static_cast<SDK::APawn*>(character);
 
-        g_canPage.store(g_pageOn && ready && inDrone, std::memory_order_relaxed);
+        g_canPage.store(pageOn && ready && inDrone, std::memory_order_relaxed);
         if (!ready)
         {
             g_canSelect.store(false, std::memory_order_relaxed);
@@ -512,7 +530,7 @@ namespace
 
         SDK::UObject* subsystem = LocalSubsystem(pc);
 
-        if (g_pageOn && inDrone)
+        if (pageOn && inDrone)
         {
             const int32_t notches = g_pageWheel.Take(deltaTime);
             for (int32_t steps = 0; steps < (std::min)(std::abs(notches), kMaxStepsPerTick); ++steps)
@@ -530,7 +548,7 @@ namespace
         // Read after the page switch above, so a slot is picked on the page the
         // player now sees.
         PageSlots page;
-        const bool havePage = g_selectOn && !IsGameMenuOpen() && BuildingSlotTypeResolved()
+        const bool havePage = selectOn && !IsGameMenuOpen() && BuildingSlotTypeResolved()
             && ReadPage(subsystem, page);
         if (!havePage)
         {
