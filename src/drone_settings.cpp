@@ -63,8 +63,22 @@ namespace
     std::atomic<bool> g_slowClashChecked{ false };
     bool g_loggedInstanceReport = false;
 
-    void OnBoostKeyEvent(EModKey, EModKeyEvent event) { g_boost.OnEvent(event); }
-    void OnSlowKeyEvent(EModKey, EModKeyEvent event)  { g_slow.OnEvent(event); }
+    // The keys stay registered once they are, so a press while the part is
+    // denied is dropped here; a release always lands, so a key let go while
+    // denied never reads as held when the part comes back.
+    void OnBoostKeyEvent(EModKey, EModKeyEvent event)
+    {
+        if (event == EModKeyEvent::Pressed && !DroneFields::Features::Limits.On())
+            return;
+        g_boost.OnEvent(event);
+    }
+
+    void OnSlowKeyEvent(EModKey, EModKeyEvent event)
+    {
+        if (event == EModKeyEvent::Pressed && !DroneFields::Features::Limits.On())
+            return;
+        g_slow.OnEvent(event);
+    }
 
     // The Sprint lookup's state: written on the game thread only (a lookup
     // reads the world, so it is never made from the init or render thread).
@@ -702,6 +716,97 @@ void OnDroneTick(float deltaSeconds)
 
     if (needsInstanceUpdate)
         UpdateActiveDrones();
+}
+
+void SetDroneLimitsActive(bool active)
+{
+    if (active)
+    {
+        RegisterLimitKeys(GetSelf());
+
+        if (!g_drone.valid)
+        {
+            LOG_DEBUG("SetDroneLimitsActive: acquiring drone settings CDO");
+            if (!InitDroneSettings())
+            {
+                LOG_WARN("SetDroneLimitsActive: CDO not found -- drone settings unavailable");
+                return;
+            }
+        }
+
+        LOG_DEBUG("SetDroneLimitsActive: CDO defaults -- speed=%.0f maxRadius=%.0f maxHeight=%.0f",
+            *g_drone.speedPerSec, *g_drone.maxRadius, *g_drone.maxHeight);
+
+        DroneConfig::Config::AdoptGameDefaults(g_drone.origSpeedPerSec, g_drone.origMaxRadius, g_drone.origMaxHeight);
+
+        *g_drone.speedPerSec   = DroneConfig::Config::ReadSpeedPerSec();
+        *g_drone.maxRadius     = DroneConfig::Config::ReadMaxRadius();
+        *g_drone.maxHeight     = DroneConfig::Config::ReadMaxHeight();
+        RequestSphereRadius(DroneConfig::Config::ReadSphereRadius());
+        *g_drone.warningRadius = *g_drone.maxRadius * 0.95f;
+        *g_drone.warningHeight = *g_drone.maxHeight * 0.95f;
+
+        LOG_DEBUG("SetDroneLimitsActive: applied -- speed=%.0f maxRadius=%.0f warningRadius=%.0f maxHeight=%.0f warningHeight=%.0f",
+            *g_drone.speedPerSec, *g_drone.maxRadius, *g_drone.warningRadius,
+            *g_drone.maxHeight, *g_drone.warningHeight);
+
+        UpdateActiveDrones();
+
+        // The ramp starts from the value just written, and the first tick
+        // counts as a base-speed change.
+        g_currentEffectiveSpeed = *g_drone.speedPerSec;
+        g_lastBaseSpeed = -1.0f;
+        return;
+    }
+
+    // Denied: put the game's numbers back. Game thread only (the tick is),
+    // which RestoreCDODefaults needs for the live drone's body. Settings that
+    // were never applied have nothing to put back.
+    if (!g_drone.valid)
+        return;
+
+    RestoreCDODefaults();
+    UpdateActiveDrones();
+
+    // OnDroneTick no longer runs, so nothing else clears what it kept.
+    g_currentEffectiveSpeed = g_drone.origSpeedPerSec;
+    g_lastBaseSpeed = -1.0f;
+    g_droneSizeCm = g_drone.origSphereRadius;
+    g_wasInDrone = false;
+    g_boostWasActive = false;
+    g_slowWasActive = false;
+    g_pendingRadius.TakeIfPending(nullptr);
+    g_pendingHeight.TakeIfPending(nullptr);
+    g_pendingSphere.TakeIfPending(nullptr);
+    g_pendingUpdateDrones.store(false, std::memory_order_relaxed);
+    LOG_DEBUG("SetDroneLimitsActive: denied -- game values restored");
+}
+
+namespace
+{
+    bool g_limitKeysRegistered = false;
+}
+
+bool LimitKeysRegistered()
+{
+    return g_limitKeysRegistered;
+}
+
+void RegisterLimitKeys(IPluginSelf* self)
+{
+    if (g_limitKeysRegistered || !self)
+        return;
+
+    g_limitKeysRegistered = true;
+    RegisterBoostKey(self);
+    RegisterSlowKey(self);
+}
+
+void UnregisterLimitKeys(IPluginSelf* self)
+{
+    g_limitKeysRegistered = false;
+    UnregisterBoostKey(self);
+    UnregisterSlowKey(self);
 }
 
 void RegisterBoostKey(IPluginSelf* self)

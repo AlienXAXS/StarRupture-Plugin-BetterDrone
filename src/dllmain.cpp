@@ -33,8 +33,13 @@ static struct InitRan
 {
     bool audio = false, laser = false, mapMarker = false, speedometer = false;
     bool interact = false, hotbar = false, map = false, mapFollow = false, fog = false;
-    bool buildMenu = false, escPause = false, limitsKeys = false;
+    bool buildMenu = false, escPause = false;
 } s_ran;
+
+// What the drone limits are applied as: the drone settings carry the
+// configured values while true, the game's own while false. Compared with the
+// flag on every tick, so a flip either way is caught on the game thread.
+static bool s_limitsApplied = false;
 
 static std::atomic<DWORD> g_gameThreadId{ 0 };
 
@@ -62,37 +67,22 @@ static void OnEngineInit()
     if (!DroneFields::Features::Limits.On())
         return;
 
-    LOG_DEBUG("OnEngineInit: acquiring drone settings CDO");
-
-    if (!InitDroneSettings())
-    {
-        LOG_WARN("OnEngineInit: CDO not found — drone settings unavailable");
-        return;
-    }
-
-    LOG_DEBUG("OnEngineInit: CDO defaults — speed=%.0f maxRadius=%.0f maxHeight=%.0f",
-        *g_drone.speedPerSec, *g_drone.maxRadius, *g_drone.maxHeight);
-
-    DroneConfig::Config::AdoptGameDefaults(g_drone.origSpeedPerSec, g_drone.origMaxRadius, g_drone.origMaxHeight);
-
-    *g_drone.speedPerSec   = DroneConfig::Config::ReadSpeedPerSec();
-    *g_drone.maxRadius     = DroneConfig::Config::ReadMaxRadius();
-    *g_drone.maxHeight     = DroneConfig::Config::ReadMaxHeight();
-    RequestSphereRadius(DroneConfig::Config::ReadSphereRadius());
-    *g_drone.warningRadius = *g_drone.maxRadius * 0.95f;
-    *g_drone.warningHeight = *g_drone.maxHeight * 0.95f;
-
-    LOG_DEBUG("OnEngineInit: applied — speed=%.0f maxRadius=%.0f warningRadius=%.0f maxHeight=%.0f warningHeight=%.0f",
-        *g_drone.speedPerSec, *g_drone.maxRadius, *g_drone.warningRadius,
-        *g_drone.maxHeight, *g_drone.warningHeight);
-
-    UpdateActiveDrones();
+    // Marked applied even when the game's values were not found, so the tick
+    // does not retry the lookup every frame.
+    s_limitsApplied = true;
+    SetDroneLimitsActive(true);
 }
 
 static void OnEngineTick(float deltaSeconds)
 {
     NoteGameThread();
-    if (DroneFields::Features::Limits.On())
+    const bool limitsOn = DroneFields::Features::Limits.On();
+    if (limitsOn != s_limitsApplied)
+    {
+        s_limitsApplied = limitsOn;
+        SetDroneLimitsActive(limitsOn);
+    }
+    if (s_limitsApplied)
         OnDroneTick(deltaSeconds);
     TickDroneFloorGuard(deltaSeconds);
     TickDroneBodyAnchor();
@@ -126,7 +116,7 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
 
     if (strcmp(section, "Controls") == 0 && strcmp(key, "Boost Key") == 0)
     {
-        if (!DroneFields::Features::Limits.On())
+        if (!LimitKeysRegistered())
             return;
 
         // Re-register from scratch rather than rely on the loader's own
@@ -139,7 +129,7 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
 
     if (strcmp(section, "Controls") == 0 && strcmp(key, "Slow Key") == 0)
     {
-        if (!DroneFields::Features::Limits.On())
+        if (!LimitKeysRegistered())
             return;
 
         // Re-registered for the same reason as Boost Key: its Released is
@@ -284,11 +274,7 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
         InitDroneEscPause(self);
     }
     if (DroneFields::Features::Limits.On())
-    {
-        s_ran.limitsKeys = true;
-        RegisterBoostKey(self);
-        RegisterSlowKey(self);
-    }
+        RegisterLimitKeys(self);
 
     if (self->hooks->UI)
     {
@@ -303,11 +289,7 @@ extern "C" __declspec(dllexport) void PluginShutdown()
 {
     LOG_DEBUG("PluginShutdown: restoring CDO defaults and unregistering hooks");
 
-    if (s_ran.limitsKeys)
-    {
-        UnregisterBoostKey(g_self);
-        UnregisterSlowKey(g_self);
-    }
+    UnregisterLimitKeys(g_self);
     ShutdownDroneBodyAnchor();
     if (s_ran.laser)
         ShutdownDroneLaser(g_self);

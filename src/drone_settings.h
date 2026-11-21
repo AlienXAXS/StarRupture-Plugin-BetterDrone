@@ -43,6 +43,20 @@ void ShutdownGameSessionTracking(IPluginSelf* self);
 
 void OnDroneTick(float deltaSeconds);
 
+// Applies the drone limits (the configured speed, range and size, written to
+// the game's drone settings and every live drone) or, when active is false,
+// puts the game's own values back. Called on the game thread when the part's
+// flag flips, and once at engine init. The first activation acquires the
+// game's values itself, for a part that was denied at launch.
+void SetDroneLimitsActive(bool active);
+
+// The Boost and Slow keys, registered together and left registered once they
+// are: while the part is denied a press is dropped, not unregistered.
+// Register is a no-op when they already are; Unregister is for shutdown.
+bool LimitKeysRegistered();
+void RegisterLimitKeys(IPluginSelf* self);
+void UnregisterLimitKeys(IPluginSelf* self);
+
 // Reads Boost Key from config and applies it: a custom combo, or following
 // the game's Sprint key if it's DroneConfig::kBoostKeyFollowsSprint.
 void RegisterBoostKey(IPluginSelf* self);
