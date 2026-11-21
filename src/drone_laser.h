@@ -49,3 +49,9 @@ void RebindDroneLaserKey(IPluginSelf* self, const char* newKeyName);
 
 // Call every engine tick.
 void TickDroneLaser(float deltaSeconds);
+
+// Game thread only. Stops any mining, beam and sound and hides the heat ring,
+// for the moment the section is turned off by the host. The key stays
+// registered, and the heat count stays where it was until the section is on
+// again.
+void StopDroneLaser();

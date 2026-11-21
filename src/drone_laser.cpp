@@ -1207,6 +1207,15 @@ void ShutdownDroneLaser(IPluginSelf* self)
     g_reloadInDrone  = false;
 }
 
+void StopDroneLaser()
+{
+    StopMining("section off");
+    g_s.latched    = false;
+    g_s.keyWasHeld = false;
+    DroneLaserFx::Stop();
+    PublishDroneHeat(nullptr);
+}
+
 void TickDroneLaser(float deltaSeconds)
 {
     SampleDrillMods(LocalPlayerCharacter());
