@@ -397,6 +397,11 @@ namespace
     // release alone. Cleared by the next plain press. Game thread only.
     bool g_holdRan = false;
 
+    // True from a press this plugin took until the release that ends it, so a
+    // release that arrives after the host turned the section off still winds
+    // the press back. Game thread only.
+    bool g_pressOpen = false;
+
     // True when the target the game would interact with has been destroyed since
     // the controller picked it. NativeOnInputInteract and ...Started take the
     // target from CurrentInteractableActor without checking it is alive, and a
@@ -421,7 +426,8 @@ namespace
 
         if (press)
         {
-            g_holdRan = false;
+            g_holdRan   = false;
+            g_pressOpen = true;
             if (TargetDestroyed(pc))
                 LogTargetDestroyed(pc);
             else
@@ -442,7 +448,8 @@ namespace
                 else
                     reinterpret_cast<InteractVoid_t>(g_addrInteract)(pc);
             }
-            g_holdRan = false;
+            g_holdRan   = false;
+            g_pressOpen = false;
         }
     }
 
@@ -452,6 +459,8 @@ namespace
     // condition stopped it. Every one of these is a state the player can be in
     // legitimately, so silence is indistinguishable from the key never
     // arriving at all -- which is the report this has to answer.
+    constexpr const char* kGateHostOff = "interaction in drone mode is turned off by the host";
+
     const char* InteractGate(SDK::ACrPlayerControllerBase* pc, SDK::ACrCharacterPlayerBase*& character)
     {
         if (!pc)
@@ -465,7 +474,7 @@ namespace
             return "character is not in drone mode";
 
         if (!DroneFields::Features::Interaction.On())
-            return "interaction in drone mode is turned off by the host";
+            return kGateHostOff;
 
         if (!DroneConfig::Config::ReadInteractInDroneMode())
             return "'Interact In Drone Mode' is disabled in the config";
@@ -652,6 +661,15 @@ namespace
         SDK::ACrCharacterPlayerBase*  character = nullptr;
         if (const char* gate = InteractGate(pc, character))
         {
+            // The host turned the section off between the press and its release:
+            // the press already started, so the release still ends it, and
+            // takes nothing. The pawn test is the gate's own.
+            if (gate == kGateHostOff && release && g_pressOpen && pc->Pawn == static_cast<SDK::APawn*>(character))
+            {
+                reinterpret_cast<InteractBool_t>(g_addrInteractCompleted)(pc);
+                g_holdRan   = false;
+                g_pressOpen = false;
+            }
             LogGateOnce(gate);
             return;
         }
@@ -1429,6 +1447,7 @@ void ShutdownDroneInteract()
     g_holdDown    = false;
     g_holdArmed   = false;
     g_holdRan     = false;
+    g_pressOpen   = false;
     g_holdSeconds = 0.0f;
     g_holdTimeRead = false;
     g_holdTarget.Reset();
