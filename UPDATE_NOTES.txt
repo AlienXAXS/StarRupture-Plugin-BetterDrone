@@ -10,3 +10,4 @@
 - Q or B with the building menu open closes the menu and keeps you in the drone, on the game version where the menu needs it
 - Fixed a crash when releasing the interact key after what you were interacting with was destroyed while the key was held.
 - Needs ModLoader 1.24.0 or newer. The hotbar parts (the number keys and the wheel picking hotbar items, and the Ctrl+wheel hotbar page) need game Update 3 or newer and do nothing on older game versions
+- Now loads on ModLoader v1.23.0 and newer

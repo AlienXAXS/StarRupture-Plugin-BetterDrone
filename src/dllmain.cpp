@@ -74,7 +74,7 @@ static PluginInfo s_info =
     MODLOADER_BUILD_TAG,
     "AlienX",
     "Adjust building drone limits, speed boost, and audio via plugin config.",
-    PLUGIN_INTERFACE_VERSION,
+    PLUGIN_DECLARED_INTERFACE,
     PLUGIN_TARGET_CLIENT,
     PLUGIN_GAME_BUILT_CL,
     PLUGIN_MAP_MIGRATED
