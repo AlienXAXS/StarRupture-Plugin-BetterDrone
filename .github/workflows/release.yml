@@ -17,8 +17,6 @@ jobs:
       plugin_name: BetterDrone
       solution_file: BetterDrone.sln
       release_title: BetterDrone Plugin
-      # Plugin SDK headers: the commit this plugin was built and tested with (release/1.28.0 head)
-      sdk_ref: 8cab2a0a42555c5b35105cdb4a9d7167f7e48fef
       # Global (v3 API) id of the mod page: GET /v3/games/starrupture/mods/115 -> data.id
       nexus_mod_id: '37074157699187'
       dry_run: ${{ inputs.dry_run }}

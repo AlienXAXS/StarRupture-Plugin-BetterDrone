@@ -165,7 +165,7 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
 
     if (strcmp(section, "Controls") == 0 && strcmp(key, "Mining Laser Key") == 0)
     {
-        if (!DroneFields::Features::MiningLaser.On())
+        if (!s_ran.laser)
             return;
 
         // Re-registered for the same reason as Boost Key: its Released is
