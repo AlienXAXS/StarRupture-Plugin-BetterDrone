@@ -1,11 +1,2 @@
-- Press C (rebindable) on the map in the drone to switch between your character and the drone
-- Ctrl + mouse wheel switches your hotbar page while the drone is out. Needs game Update 3 or newer; does nothing on older game versions. Ctrl is also the default Slow key, so the drone slows while you scroll; rebind Slow Key on the Config page if you prefer
-- The number keys pick the hotbar slot with the same number (1-9 and 0) while the drone is out, building slots only; weapon, consumable and empty slots are skipped. Needs game Update 3 or newer; does nothing on older game versions
-- The mouse wheel now stays with the game in the drone by default. New option Mouse Wheel Picks Hotbar In Drone Mode (off by default) steps to the next or previous building slot with the wheel in the drone; while you are placing a building the wheel stays with the game either way. Needs game Update 3 or newer; does nothing on older game versions
-- Two new options for the hotbar on foot: Number Keys Pick Hotbar On Foot (on by default) selects the slot in delete mode, where the game has no number key, and Mouse Wheel Picks Hotbar On Foot (off by default, so the game's own weapon wheel is kept) steps to the next or previous building or weapon slot. Needs game Update 3 or newer; does nothing on older game versions
-- New option Esc Opens Pause Menu In Drone Mode (off by default): Esc opens the pause menu in the drone instead of recalling it; Q still recalls
-- New speed preset Light Construction (1450 cm/s, 2.25x boost), halfway between Stock and Better Construction
-- Q or B with a new building in hand ends the placement and keeps you in the drone; moving an existing building still snaps back
-- Q or B with the building menu open closes the menu and keeps you in the drone, on the game version where the menu needs it
-- Fixed a crash when releasing the interact key after what you were interacting with was destroyed while the key was held.
+- BetterDrone now reads its game values from the loader's version object map (the version map), so it follows game updates through the loader and runs on every current game build. A feature whose entry is missing for your game version stays off and the game's own behaviour is kept
 - Needs ModLoader 1.23.0 or newer. The hotbar parts (the number keys and the wheel picking hotbar items, and the Ctrl+wheel hotbar page) need game Update 3 or newer and do nothing on older game versions
