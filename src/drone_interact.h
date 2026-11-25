@@ -100,11 +100,6 @@ SDK::ACrPlayerControllerBase* LocalPlayerController();
 // controller or either member is not there. Read each time, never kept.
 bool BuildingHeld(SDK::ACrPlayerControllerBase* pc);
 
-// Game thread only. The map, if it is the active widget on the local player's
-// menu layer, whether it was opened from drone mode or on foot. Valid for the
-// current tick only.
-SDK::UCrUW_MapMenu* ActiveLocalMap();
-
 // Game thread only. A handler of the Q, B or Esc press in flight ran: opens
 // the window in which the building drone's end is held back while the building
 // menu is closed or a placement ended. The game's handlers run in no fixed

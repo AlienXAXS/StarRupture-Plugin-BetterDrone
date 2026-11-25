@@ -157,18 +157,7 @@ namespace
         return DroneConfig::Config::ReadInteractInDroneMode() ? character : nullptr;
     }
 
-    SDK::ACrPlayerControllerBase* LocalController()
-    {
-        SDK::UWorld* world = PluginSdkRuntime::GetWorld();
-        if (!world)
-            return nullptr;
-
-        SDK::APlayerController* pc = SDK::UGameplayStatics::GetPlayerController(world, 0);
-        if (!pc || !pc->IsA(SDK::ACrPlayerControllerBase::StaticClass()))
-            return nullptr;
-
-        return static_cast<SDK::ACrPlayerControllerBase*>(pc);
-    }
+    using PluginMapOverlay::LocalController;
 
     bool SwallowDuplicate(std::atomic<uint64_t>& last, void* pc)
     {
@@ -774,7 +763,7 @@ namespace
     // The mask only picks which changes wake the callback, which stores the
     // whole state. Every reader tests its own bit (ANY_MENU in IsGameMenuOpen,
     // MAP, BUILD_MENU), so adding BUILD_MENU changes none of their answers.
-    constexpr uint64_t kMenuStateMask = PLUGIN_UI_ANY_MENU | PLUGIN_UI_MAP | PLUGIN_UI_BUILD_MENU;
+    constexpr uint64_t kMenuStateMask = PLUGIN_UI_ANY_MENU | PLUGIN_UI_BUILD_MENU;
     std::atomic<uint64_t> g_uiState{ 0 };
 
     void OnUIState(uint64_t, uint64_t newState, void*)
@@ -782,71 +771,14 @@ namespace
         g_uiState.store(newState, std::memory_order_relaxed);
     }
 
-    // The layer UCrUIManagerSubsystem opens the map, the inventory and
-    // every building window on, and the one it opens the death screen on.
-    // The HUD layout pushes its escape menu there too. The HUD itself sits
-    // on another layer, so an empty stack here means no menu is up.
-    // Walked only to get at a widget that is about to be acted on.
-    constexpr const char* kMenuLayerTag = "UI.Layer.Menu";
-
-    // The layer the building menu opens on in newer game builds.
-    constexpr const char* kGameMenuLayerTag = "UI.Layer.GameMenu";
-
-    // The local player's layer with this tag, or null. Valid for the current
-    // tick only.
-    SDK::UCommonActivatableWidgetContainerBase* FindLayer(SDK::ACrPlayerControllerBase* pc, const char* tag)
-    {
-        auto* ui = static_cast<SDK::UGameUIManagerSubsystem*>(
-            SDK::USubsystemBlueprintLibrary::GetGameInstanceSubsystem(pc, SDK::UCrUIManagerSubsystem::StaticClass()));
-        SDK::UGameUIPolicy* policy = ui ? ui->CurrentPolicy : nullptr;
-        if (!policy)
-            return nullptr;
-
-        for (int32_t i = 0; i < policy->RootViewportLayouts.Num(); ++i)
-        {
-            const SDK::FRootViewportLayoutInfo& info = policy->RootViewportLayouts[i];
-            if (!info.RootLayout || info.LocalPlayer != pc->Player)
-                continue;
-
-            // Not const: the SDK's const TMap indexer does not compile.
-            auto& layers = info.RootLayout->Layers;
-            for (int32_t l = 0; l < layers.NumAllocated(); ++l)
-            {
-                if (!layers.IsValidIndex(l))
-                    continue;
-
-                SDK::UCommonActivatableWidgetContainerBase* stack = layers[l].Value();
-                if (stack && layers[l].Key().TagName.ToString() == tag)
-                    return stack;
-            }
-        }
-
-        return nullptr;
-    }
-
-    // The local player's menu layer, or null. Valid for the current tick only.
-    SDK::UCommonActivatableWidgetContainerBase* FindMenuLayer(SDK::ACrPlayerControllerBase* pc)
-    {
-        return FindLayer(pc, kMenuLayerTag);
-    }
-
-    // The menu of type T, if it is the active widget on the menu layer and
-    // not already closing. DisplayedWidget is what the stack's
-    // GetActiveWidget returns.
-    template <class T>
-    T* ActiveMenu(SDK::UCommonActivatableWidgetContainerBase* layer)
-    {
-        SDK::UCommonActivatableWidget* top = layer->DisplayedWidget;
-        if (!top || !top->bIsActive || !top->IsA(T::StaticClass()))
-            return nullptr;
-
-        return static_cast<T*>(top);
-    }
-
-    SDK::UCrUW_MapMenu* ActiveMap(SDK::UCommonActivatableWidgetContainerBase* layer)
-    {
-        return ActiveMenu<SDK::UCrUW_MapMenu>(layer);
-    }
+    // The menu layers and the widget on top of one: PluginMapOverlay walks them
+    // for the map, and the building menu is found the same way.
+    using PluginMapOverlay::kGameMenuLayerTag;
+    using PluginMapOverlay::kMenuLayerTag;
+    using PluginMapOverlay::FindLayer;
+    using PluginMapOverlay::FindMenuLayer;
+    using PluginMapOverlay::ActiveMenu;
+    using PluginMapOverlay::ActiveMap;
 
     // Idle until the map key is pressed, then tracks the menu layer only
     // while something is on it. Everything is looked up fresh each tick:
@@ -1349,17 +1281,6 @@ bool BuildingHeld(SDK::ACrPlayerControllerBase* pc)
     return building && DroneFields::ValueOr(DroneFields::HelperActor, building);
 }
 
-SDK::UCrUW_MapMenu* ActiveLocalMap()
-{
-    // No map on the menu layer, no walk of it.
-    if (!(g_uiState.load(std::memory_order_relaxed) & PLUGIN_UI_MAP))
-        return nullptr;
-
-    SDK::ACrPlayerControllerBase* pc = LocalController();
-    SDK::UCommonActivatableWidgetContainerBase* layer = pc ? FindMenuLayer(pc) : nullptr;
-    return layer ? ActiveMap(layer) : nullptr;
-}
-
 bool IsLocalPlayerInDrone()
 {
     try
@@ -1386,6 +1307,7 @@ void InitDroneMenuState(IPluginSelf* self)
     }
 
     self->hooks->GameMenu->RegisterOnUIStateChanged(kMenuStateMask, &OnUIState, nullptr);
+    PluginMapOverlay::Init(self);
 }
 
 void ShutdownDroneMenuState(IPluginSelf* self)
@@ -1393,6 +1315,7 @@ void ShutdownDroneMenuState(IPluginSelf* self)
     if (self->hooks->GameMenu)
         self->hooks->GameMenu->UnregisterOnUIStateChanged(&OnUIState, nullptr);
 
+    PluginMapOverlay::Shutdown(self);
     g_uiState.store(0, std::memory_order_relaxed);
 }
 

@@ -10,6 +10,7 @@
 #include <AuWeapon_structs.hpp>
 #include <Engine_classes.hpp>
 #include <plugin_map.h>
+#include <plugin_map_overlay.h>
 #include "plugin_helpers.h"
 
 #include <cstdint>
@@ -214,18 +215,7 @@ namespace DroneFields
 	inline auto OreMappingData        = DRONE_FIELD(UCrOreSubsystem, InfiniteOrePhysMatMappingData);
 	inline auto PhysMatOreDataMap     = DRONE_FIELD_ANY_SIZE(UCrInfiniteOrePhysMatData, PhysMatOreDataMap);
 
-	// The map marker
-	inline auto MapDataHelper      = DRONE_FIELD(ACrGameStateBase, MapMenuDataReplicationHelper);
-	inline auto BuildingsMarkers   = DRONE_FIELD_ANY_SIZE(ACrMapMenuDataReplicationHelper, BuildingsMarkerDataContainer);
-	inline auto BuildingsMarkerData = DRONE_FIELD(FBuildingsMarkerDataContainer, BuildingsMarkerData);
-	inline auto MarkerBuildingHandle = DRONE_FIELD(FBuildingMarkerDataFastArrayItem, BuildingHandle);
-	inline auto MarkerLocation     = DRONE_FIELD(FBuildingMarkerDataFastArrayItem, Location);
-	inline auto MapMenuMapArea     = DRONE_FIELD(UCrUW_MapMenu, MapMenuMapArea);
-	inline auto MapMassMarkers     = DRONE_FIELD_ANY_SIZE(UCrUW_MapMenuMapArea, MapMenuMassMarkers);
-	inline auto MapTerrain         = DRONE_FIELD(UCrUW_MapMenuMapArea, MapMenuTerrain);
-	inline auto MapCanvasPanel     = DRONE_FIELD(UCrUW_MapMenuMapArea, CanvasPanelMapArea);
-	inline auto MarkerWidget       = DRONE_FIELD(FEntityMarkerUIRepresentation, Marker);
-	inline auto MapPivotPoint      = DRONE_FIELD(UCrMapMenuDevSettings, MapAreaPivotPoint);
+	// The map marker's colour. Where it is placed is PluginMapOverlay's.
 	inline auto MarkerColorData    = DRONE_FIELD(UCrMapMenuDevSettings, MarkerStatusesColorData);
 	inline auto MarkerPlayerColour = DRONE_FIELD(UCrMapMenuMarkerDefaultColorData, MarkerPlayer);
 
@@ -248,11 +238,9 @@ namespace DroneFields
 	inline auto NativeInputActionSize = SR_SIZE(FCrNativeInputAction);
 	inline auto InventorySlotSize     = SR_SIZE(FCrInventorySlot);
 	inline auto WeakSpotSize          = SR_SIZE(FCrWeakSpotRuntimeData);
-	inline auto MarkerItemSize        = SR_SIZE(FBuildingMarkerDataFastArrayItem);
 
 	// Structs held as map values: the maps are walked with PluginMap::ScriptMapView
 	// at a stride computed from the size the running game reflects.
-	inline auto MarkerRepresentationSize = SR_SIZE(FEntityMarkerUIRepresentation);
 	inline auto VeinDataSize          = SR_SIZE(FCrInfiniteOreData);
 
 	// Blueprint (_C) members have no offset in the Game-SDK: found by name on
@@ -274,6 +262,7 @@ namespace DroneFields
 	// loader has then recorded the failure and refuses the plugin.
 	inline bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
 	{
+		const bool overlay = PluginMapOverlay::Resolve(self, scanner);
 		const bool toWorld = PluginMap::ResolveField(scanner, self, ComponentToWorld, kComponentToWorldRows,
 			static_cast<uint32_t>(sizeof(kComponentToWorldRows) / sizeof(kComponentToWorldRows[0])));
 		return PluginMap::ResolveFields(scanner, self,
@@ -290,14 +279,13 @@ namespace DroneFields
 			MinedVeinMaterial, MinedVeinData, VeinResource, VeinGrantCount, OreData, OreResource, OreInitMaxCount,
 			OreWeakSpots, OreIsDepleted, OreCurrentCount, OreMaxCount, WeakSpotItems, WeakSpotHealth, WeakSpotCount,
 			WeakSpotResource, InventorySlots, SlotItemId, ItemIdHandle, OreMappingData, PhysMatOreDataMap,
-			MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
-			MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint, MapAreaMatrix,
+			MapAreaMatrix,
 			CurrentHotbarIndex, Hotbars, HotbarSlots, HotbarSlotType,
 			MarkerColorData, MarkerPlayerColour,
 			HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM,
 			HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM,
-			NativeInputActionSize, InventorySlotSize, WeakSpotSize, MarkerItemSize, MarkerRepresentationSize,
-			VeinDataSize) && toWorld;
+			NativeInputActionSize, InventorySlotSize, WeakSpotSize,
+			VeinDataSize) && toWorld && overlay;
 	}
 
 	// The two struct sizes of the hotbar slots, asked for only once the members
@@ -358,13 +346,12 @@ namespace DroneFields
 			{ "Interaction.Drone Reveals Map" } };
 
 		inline PluginMap::Feature MapMarker{ "map-marker", "Drone marker on the map",
-			PluginMap::KeysOf(MapDataHelper, BuildingsMarkers, BuildingsMarkerData, MarkerBuildingHandle, MarkerLocation,
-				MapMenuMapArea, MapMassMarkers, MapTerrain, MapCanvasPanel, MarkerWidget, MapPivotPoint,
-				MarkerColorData, MarkerPlayerColour, MarkerItemSize, MarkerRepresentationSize),
+			PluginMapOverlay::KeysWith(MarkerColorData, MarkerPlayerColour),
 			{} };
 
 		inline PluginMap::Feature MapFollow{ "map-follow", "Map follows the drone",
-			PluginMap::KeysOf(Keys::MapCenterOnLocation, MapAreaMatrix, MapMenuMapArea, MapCanvasPanel),
+			PluginMap::KeysOf(Keys::MapCenterOnLocation, MapAreaMatrix, PluginMapOverlay::Fields::MapMenuMapArea,
+				PluginMapOverlay::Fields::MapCanvasPanel),
 			{ "Interaction.Map Centre Key" } };
 
 		inline PluginMap::Feature Limits{ "drone-limits", "Drone speed, boost, size and limits",
