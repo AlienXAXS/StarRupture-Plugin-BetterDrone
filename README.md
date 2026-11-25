@@ -119,12 +119,6 @@ The game's system voice (rupture warnings and the other spoken lines) plays from
 
 You can fly the drone outside during a wave while your character stays safe in the shelter and won't die. Shelter is judged at your character's body, not at the drone, and shelter built or deconstructed around it mid-flight counts at once. With `Always Allow Drone` off, the stock rule that ends the drone in an interior follows your character too, so flying the drone into one no longer ends it. No setting.
 
-### When a server turns a feature off <sup>[✦](#msantoro12)</sup>
-
-A server host can turn a BetterDrone feature off, and it stops while it is off: the game's own behaviour comes back. The drone limits return the game's own speed, range and size and the Boost and Slow keys do nothing; the speedometer, the map marker and the mining laser disappear; the drone sounds and the system voice go back to the game's. The loader's Config page greys the feature as "turned off by this server". Everything else keeps working. A host can switch these separately: drone limits, Always Allow Drone, wave shelter, interaction, hold to take all, hotbar page, hotbar slots, the map from the drone, the drone marker, map following, map reveal, the mining laser, the building menu, cancelling a placement, Esc opens the pause menu, the speedometer and its height, drone sounds, the system voice, and following your Sprint key. With that last one off, BetterDrone stops reading the game's Sprint key: a Boost Key set to follow Sprint uses LeftShift instead (logged once), and the Slow Key clash check is skipped.
-
-When the host lets a feature back on, it returns at once if it was on when the game started. The drone limits, the system voice and the speedometer height also return at once if they were off at launch. Any other feature that was already off when the game started returns after the next RELOAD. With an older ModLoader that has no server rules, nothing changes.
-
 ---
 
 ## Configuration
