@@ -1314,13 +1314,13 @@ void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
     // Optional throughout: a miss leaves the rest of BetterDrone working, which
     // is what the old scan-at-init path did. The loader still lists each miss.
     g_addrTargetsChanged = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::TargetsChanged, kTargetsChangedPattern);
+        DroneFields::Keys::TargetsChanged, PLUGIN_MAP_PATTERN(kTargetsChangedPattern));
     g_addrInteractStarted = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::InteractStarted, kInteractStartedPattern);
+        DroneFields::Keys::InteractStarted, PLUGIN_MAP_PATTERN(kInteractStartedPattern));
     g_addrInteractCompleted = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::InteractCompleted, kInteractCompletedPattern);
+        DroneFields::Keys::InteractCompleted, PLUGIN_MAP_PATTERN(kInteractCompletedPattern));
     g_addrInteract = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::Interact, kInteractPattern);
+        DroneFields::Keys::Interact, PLUGIN_MAP_PATTERN(kInteractPattern));
 
     if (DroneFields::Features::HoldTakeAll.On())
     {
@@ -1465,7 +1465,7 @@ void ResolveDroneMap(IPluginSelf* self, IPluginHookScanner* scanner)
         return;
 
     g_addrMapMenu = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::MapMenu, kMapMenuPattern);
+        DroneFields::Keys::MapMenu, PLUGIN_MAP_PATTERN(kMapMenuPattern));
 }
 
 bool InitDroneMap()
@@ -1511,7 +1511,7 @@ void ResolveDroneFog(IPluginSelf* self, IPluginHookScanner* scanner)
         return;
 
     g_addrUncoverFog = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::UncoverFog, kUncoverFogPattern);
+        DroneFields::Keys::UncoverFog, PLUGIN_MAP_PATTERN(kUncoverFogPattern));
 }
 
 bool InitDroneFog()
@@ -1554,12 +1554,12 @@ void ResolveDroneBuildMenu(IPluginSelf* self, IPluginHookScanner* scanner)
         return;
 
     g_addrCancelTool = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::CancelTool, kCancelToolPattern);
+        DroneFields::Keys::CancelTool, PLUGIN_MAP_PATTERN(kCancelToolPattern));
     g_deactivateDrone = PluginMap::FunctionAs<DeactivateBuildingDrone_t>(scanner, self,
-        DroneFields::Keys::DeactivateBuildingDrone, kDeactivateDronePattern,
+        DroneFields::Keys::DeactivateBuildingDrone, PLUGIN_MAP_PATTERN(kDeactivateDronePattern),
         PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
     g_canRestoreInitialState = PluginMap::FunctionAs<CanRestoreInitialState_t>(scanner, self,
-        DroneFields::Keys::CanRestoreInitialState, kCanRestoreInitialStatePattern,
+        DroneFields::Keys::CanRestoreInitialState, PLUGIN_MAP_PATTERN(kCanRestoreInitialStatePattern),
         PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
 }
 

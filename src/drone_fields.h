@@ -119,20 +119,10 @@ namespace DroneFields
 	// in a SIMD register, so the translation is a native row of its own at the
 	// FVector size this plugin reads. Both are rows of the loader's map for the
 	// running build; a build with neither turns off the feature using them.
-	// ComponentToWorld also carries this plugin's own rows below, because not
-	// every loader this plugin runs on holds one for the newest game build.
 	inline auto ComponentToWorld = PluginField<SDK::FTransform>{ { "USceneComponent::ComponentToWorld",
 		"USceneComponent", "ComponentToWorld", PLUGIN_FIELD_NATIVE, sizeof(SDK::FTransform), 0x1F0 } };
 	inline auto TransformTranslation = PluginField<SDK::FVector>{ { "FTransform::Translation",
 		"FTransform", "Translation", PLUGIN_FIELD_NATIVE, sizeof(SDK::FVector), 0x20 } };
-
-	// ComponentToWorld on each game build BetterDrone supports (0x60 bytes at
-	// +0x1F0 on both, measured from the PDBs). The loader's own row for the
-	// running build wins when it has one.
-	inline const PluginFieldCandidate kComponentToWorldRows[] = {
-		{ 127004, 0x1F0, static_cast<uint32_t>(sizeof(SDK::FTransform)), 0, nullptr },
-		{ 128786, 0x1F0, static_cast<uint32_t>(sizeof(SDK::FTransform)), 0, nullptr },
-	};
 
 	// The map area's pan and zoom matrix. It is native (the Game-SDK has no
 	// member for it), so it is the loader's row for the running build or the
@@ -274,14 +264,13 @@ namespace DroneFields
 	// loader has then recorded the failure and refuses the plugin.
 	inline bool Resolve(IPluginSelf* self, IPluginHookScanner* scanner)
 	{
-		const bool toWorld = PluginMap::ResolveField(scanner, self, ComponentToWorld, kComponentToWorldRows,
-			static_cast<uint32_t>(sizeof(kComponentToWorldRows) / sizeof(kComponentToWorldRows[0])));
 		return PluginMap::ResolveFields(scanner, self,
 			BuildingDrone, Status, DroneCamera, DroneCameraColl, IsDead, GemAttributes, MiningComponent,
 			WeaponSystem, WeaponAttributes, AbilitySystem,
 			DroneOwnCamera, SphereComponent, PlacementDeveloperSettings, IdleSound, MovementSound, RotationSound, StateAudioComponents,
 			AttenuationFPP, AttenuationTPP,
-			CrChar, CurrentInteractableActor, PlayerControlState, BuildingMenuPlayer, ControllerBuilding, HelperActor, TransformTranslation,
+			CrChar, CurrentInteractableActor, PlayerControlState, BuildingMenuPlayer, ControllerBuilding, HelperActor,
+			ComponentToWorld, TransformTranslation,
 			SpeedPerSec, MaxRadius, WarningRadius, MaxHeight, WarningHeight, SphereRadius,
 			FogUncoverRadius, MinFootstepDistance, FogRadiusMultiplier,
 			IsSafeInterior, NativeInputActions, NativeInputAction, NativeInputHandler,
@@ -297,7 +286,7 @@ namespace DroneFields
 			HudPlayerCharacter, HudDistanceT, HudDistanceH, HudDistanceD, HudDistanceU, HudDistanceM,
 			HudHeightT, HudHeightH, HudHeightD, HudHeightU, HudHeightM,
 			NativeInputActionSize, InventorySlotSize, WeakSpotSize, MarkerItemSize, MarkerRepresentationSize,
-			VeinDataSize) && toWorld;
+			VeinDataSize);
 	}
 
 	// The two struct sizes of the hotbar slots, asked for only once the members
@@ -462,8 +451,9 @@ namespace DroneFields
 		}
 	}
 
-	// A game function by its map key. The pattern is mapping input only; the
-	// loader resolves from its row for the running build. Every address BetterDrone resolves is a function entry, so each
+	// A game function by its map key. Pass the pattern through PLUGIN_MAP_PATTERN: it
+	// is mapping input for CI only and a shipped build sends none, so the loader
+	// resolves from its row for the running build. Every address BetterDrone resolves is a function entry, so each
 	// request declares PLUGIN_SCAN_FUNCTION_START: some get a detour written
 	// over them and the rest are called directly. The loader then checks the
 	// match against the executable's exception directory instead of trusting

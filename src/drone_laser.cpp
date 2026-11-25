@@ -1152,9 +1152,9 @@ void ResolveDroneLaser(IPluginSelf* self, IPluginHookScanner* scanner)
         return DroneFields::ResolveFunction(self, scanner, name, pattern);
     };
 
-    g_addrMineActor = resolve(DroneFields::Keys::MineActor, MiningNatives::kPatMineActor);
-    g_addrMineIsm   = resolve(DroneFields::Keys::MineIsm, MiningNatives::kPatMineIsm);
-    g_addrGetAmountCanAdd = resolve("UCrInventoryComponent::GetAmountCanAdd", kPatGetAmountCanAdd);
+    g_addrMineActor = resolve(DroneFields::Keys::MineActor, PLUGIN_MAP_PATTERN(MiningNatives::kPatMineActor));
+    g_addrMineIsm   = resolve(DroneFields::Keys::MineIsm, PLUGIN_MAP_PATTERN(MiningNatives::kPatMineIsm));
+    g_addrGetAmountCanAdd = resolve("UCrInventoryComponent::GetAmountCanAdd", PLUGIN_MAP_PATTERN(kPatGetAmountCanAdd));
 }
 
 void InitDroneLaser(IPluginSelf* self)

@@ -143,9 +143,9 @@ void ResolveWavePatch(IPluginSelf* self, IPluginHookScanner* scanner)
     // checks the match is a real function entry with room for the 14-byte jump,
     // rather than taking the pattern's word for it.
     g_addr = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::CanDroneBeActive, kCanBuildingDroneBeActivePattern);
+        DroneFields::Keys::CanDroneBeActive, PLUGIN_MAP_PATTERN(kCanBuildingDroneBeActivePattern));
     g_addrInterior = DroneFields::ResolveFunction(self, scanner,
-        DroneFields::Keys::CheckIfInInterior, kCheckIfInInteriorPattern);
+        DroneFields::Keys::CheckIfInInterior, PLUGIN_MAP_PATTERN(kCheckIfInInteriorPattern));
 }
 
 static void InitShelterHook()
