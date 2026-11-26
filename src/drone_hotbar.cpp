@@ -650,9 +650,9 @@ bool InitDroneHotbar(IPluginSelf* self)
     self->hooks->Engine->RegisterOnTick(OnTick);
 
     LOG_INFO("DroneHotbar: Ctrl + mouse wheel switches the hotbar page in drone mode");
-        LOG_INFO("DroneHotbar: the number keys pick a building from the hotbar in drone mode, and the mouse wheel "
-                 "does too when its option is on; on foot (each one an option) the number keys pick a slot in "
-                 "delete mode and the wheel steps through the building and weapon slots");
+    LOG_INFO("DroneHotbar: the number keys pick a building from the hotbar in drone mode, and the mouse wheel "
+             "does too when its option is on; on foot (each one an option) the number keys pick a slot in "
+             "delete mode and the wheel steps through the building and weapon slots");
     return true;
 }
 
