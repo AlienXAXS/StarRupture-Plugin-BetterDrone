@@ -300,7 +300,7 @@ extern "C" __declspec(dllexport) void PluginShutdown()
     s_limitsApplied = false;
     s_wasOnAudio = s_wasOnAnnouncer = s_wasOnLaser = s_wasOnMapMarker = true;
     s_wasOnMapFollow = s_wasOnSpeedometer = true;
-    s_wasAllowed = true;
+    s_wasOnBodyArea = true;
 }
 
 BOOL APIENTRY DllMain(HMODULE, DWORD, LPVOID)
