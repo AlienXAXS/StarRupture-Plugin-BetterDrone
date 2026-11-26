@@ -442,12 +442,19 @@ namespace DroneFields
 			PluginMap::KeysOf(AttenuationFPP, AttenuationTPP),
 			{} };
 
+		// The floor guard holds the body while the drone is out, and the body
+		// anchor keeps the area around it loaded. The camera is the floor
+		// guard's measure of how far the drone is.
+		inline PluginMap::Feature BodyArea{ "body-area", "Your body stays safe while the drone is out",
+			PluginMap::KeysOf(DroneCamera),
+			{ "Drone.Keep Area Around Body Loaded", "Drone.Body Area Radius" } };
+
 		// Declares them all. Call first in OnPluginLoadHooks.
 		inline bool Declare(IPluginSelf* self, IPluginHookScanner* scanner)
 		{
 			return PluginMap::DeclareFeatures(scanner, self, MiningLaser, MapReveal, MapMarker, MapFollow, Limits, SprintKey,
 				Announcer,
-				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarPage, HotbarSelect, MapOpen, BuildMenu, PlacementCancel, EscPause, Speedometer, SpeedometerHeight, Audio);
+				AlwaysAllow, WaveShelter, Interaction, HoldTakeAll, HotbarPage, HotbarSelect, MapOpen, BuildMenu, PlacementCancel, EscPause, Speedometer, SpeedometerHeight, Audio, BodyArea);
 		}
 	}
 

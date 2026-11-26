@@ -35,17 +35,9 @@ static bool s_limitsApplied = false;
 static bool s_wasOnAudio = true, s_wasOnAnnouncer = true, s_wasOnLaser = true, s_wasOnMapMarker = true;
 static bool s_wasOnMapFollow = true, s_wasOnSpeedometer = true;
 
-// The floor guard and the body anchor belong to no feature, so they follow
-// whether the whole plugin is turned off.
-static bool s_wasAllowed = true;
+static bool s_wasOnBodyArea = true;
 
-static bool HostDenied()
-{
-    const auto fn = PluginOptHostDenied(g_self->hooks->Network);
-    return fn && fn(g_self) == 1;
-}
-
-static void ReleaseCoreHolds()
+static void ReleaseBodyArea()
 {
     ResetDroneFloorGuard();
     ResetDroneBodyAnchor();
@@ -107,9 +99,9 @@ static void OnEngineTick(float deltaSeconds)
     }
     if (s_limitsApplied)
         OnDroneTick(deltaSeconds);
-    const bool hostDenied = HostDenied();
-    FollowOff(!hostDenied, s_wasAllowed, ReleaseCoreHolds);
-    if (!hostDenied)
+    const bool bodyAreaOn = DroneFields::Features::BodyArea.On();
+    FollowOff(bodyAreaOn, s_wasOnBodyArea, ReleaseBodyArea);
+    if (bodyAreaOn)
     {
         TickDroneFloorGuard(deltaSeconds);
         TickDroneBodyAnchor();
