@@ -6,6 +6,7 @@
 #include "plugin_presets.h"
 #include "ui_widgets.h"
 #include "drone_interact.h"
+#include "drone_fields.h"
 #include "plugin_helpers.h"
 #include <windows.h>
 #include <algorithm>
@@ -22,6 +23,23 @@ static std::atomic<bool> s_menuOpen{ false };
 static std::atomic<bool> s_openRequested{ false };
 static void* g_inputCaptureToken = nullptr;
 static char g_registeredToggleKey[64] = {};
+
+// The panel holds the controls of three parts, so it stays while any of
+// them is on; each part's own controls grey out when it is off.
+static bool PanelOn()
+{
+    namespace F = DroneFields::Features;
+    return F::Limits.On() || F::Audio.On() || F::Speedometer.On();
+}
+
+// Greys the controls drawn until the matching EndDisabled, with the reason
+// above them.
+static void BeginPartControls(IModLoaderImGui* ui, bool on)
+{
+    if (!on)
+        ui->TextDisabled("Turned off right now.");
+    ui->BeginDisabled(!on);
+}
 
 namespace
 {
@@ -279,8 +297,12 @@ namespace
         if (!ui->CollapsingHeader("Audio"))
             return;
 
+        BeginPartControls(ui, DroneFields::Features::Audio.On());
         if (!ui->BeginTable("##drone_audio_table", 3, kTableFlags))
+        {
+            ui->EndDisabled();
             return;
+        }
 
         ui->TableSetupColumn("", 0, 0.36f);
         ui->TableSetupColumn("", 0, 0.54f);
@@ -303,6 +325,7 @@ namespace
             RenderVolumeRow(ui, i);
 
         ui->EndTable();
+        ui->EndDisabled();
     }
 }
 
@@ -369,6 +392,29 @@ static void OnPauseMenuRowClicked(void*)
     s_openRequested.store(true, std::memory_order_relaxed);
 }
 
+static GameMenuEntryHandle s_pauseRow{};
+static bool s_panelWasOn = true;
+
+// Server builds have no game menu (hooks->GameMenu is null), and a client
+// whose menu patterns did not resolve is not worth a row nobody will see;
+// the toggle key still opens the panel either way.
+static void AddPauseMenuRow()
+{
+    if (!s_self->hooks->GameMenu || !s_self->hooks->GameMenu->IsAvailable())
+        return;
+
+    PluginGameMenuEntryDesc row{};
+    row.id      = "betterdrone";
+    row.label   = "BETTER DRONE";
+    row.targets = PLUGIN_GAME_MENU_PAUSE;
+    row.anchor  = PLUGIN_GAME_MENU_ANCHOR_AFTER_OPTIONS;
+    row.onClick = OnPauseMenuRowClicked;
+
+    s_pauseRow = s_self->hooks->GameMenu->AddEntry(s_self, &row);
+    if (!s_pauseRow)
+        LOG_WARN("AddPauseMenuRow: could not add the pause menu row");
+}
+
 void InitDroneUI(IPluginSelf* self)
 {
     s_self = self;
@@ -386,21 +432,8 @@ void InitDroneUI(IPluginSelf* self)
     s_panelHandle = self->hooks->UI->RegisterPanel(&desc);
     self->hooks->UI->RegisterOnPanelWindowClosed(OnPanelClosed);
 
-    // Server builds have no game menu (hooks->GameMenu is null), and a
-    // client whose menu patterns did not resolve is not worth a row nobody
-    // will see; the toggle key still opens the panel either way.
-    if (self->hooks->GameMenu && self->hooks->GameMenu->IsAvailable())
-    {
-        PluginGameMenuEntryDesc row{};
-        row.id      = "betterdrone";
-        row.label   = "BETTER DRONE";
-        row.targets = PLUGIN_GAME_MENU_PAUSE;
-        row.anchor  = PLUGIN_GAME_MENU_ANCHOR_AFTER_OPTIONS;
-        row.onClick = OnPauseMenuRowClicked;
-
-        if (!self->hooks->GameMenu->AddEntry(self, &row))
-            LOG_WARN("InitDroneUI: could not add the pause menu row");
-    }
+    s_panelWasOn = true;
+    AddPauseMenuRow();
 
     if (self->hooks->Input)
     {
@@ -467,6 +500,7 @@ void RebindToggleKey()
 static void OpenDroneMenu()
 {
     if (!s_panelHandle || !s_self || !s_self->hooks || !s_self->hooks->UI) return;
+    if (!PanelOn()) return;
 
     if (s_menuOpen.exchange(true, std::memory_order_relaxed))
     {
@@ -507,6 +541,29 @@ void ToggleDroneMenu()
         OpenDroneMenu();
 }
 
+// Game thread. On the tick the panel turns off it closes, giving back its
+// input capture, and the pause menu row goes; the row returns with it. A
+// closed panel stays closed.
+static void FollowPanelOn()
+{
+    const bool on = PanelOn();
+    if (on == s_panelWasOn || !s_self || !s_self->hooks)
+        return;
+
+    s_panelWasOn = on;
+    if (on)
+    {
+        AddPauseMenuRow();
+        return;
+    }
+
+    s_openRequested.store(false, std::memory_order_relaxed);
+    CloseDroneMenu();
+    if (s_pauseRow && s_self->hooks->GameMenu)
+        s_self->hooks->GameMenu->RemoveEntry(s_self, s_pauseRow);
+    s_pauseRow = {};
+}
+
 // Applies a pending Escape/Q close request. Called from the game tick (via
 // OnEngineTick) rather than from RenderDronePanel: the loader's
 // RenderPanelWindows snapshots each panel's isOpen into a local bool BEFORE
@@ -522,6 +579,8 @@ void ToggleDroneMenu()
 // inside, so there is nothing left for it to stomp.
 void TickDroneMenuClose()
 {
+    FollowPanelOn();
+
     if (g_closeRequested.exchange(false, std::memory_order_relaxed))
     {
         LOG_DEBUG("TickDroneMenuClose: applying a pending close request");
@@ -937,15 +996,18 @@ void TickDronePresetKeys()
     const bool slower = s_stepSlower.exchange(false, std::memory_order_relaxed);
     const bool faster = s_stepFaster.exchange(false, std::memory_order_relaxed);
 
-    // On foot, in a game menu or with the panel up, a press is simply dropped.
-    if ((slower || faster) &&
+    const bool limitsOn = DroneFields::Features::Limits.On();
+
+    // Turned off, on foot, in a game menu or with the panel up, a press is
+    // simply dropped.
+    if (limitsOn && (slower || faster) &&
         IsLocalPlayerInDrone() && !IsGameMenuOpen() && !s_menuOpen.load(std::memory_order_relaxed))
     {
         if (slower) StepSpeedPreset(-1);
         if (faster) StepSpeedPreset(+1);
     }
 
-    if (s_toastShown.load() && GetTickCount64() >= s_toastHideAt)
+    if (s_toastShown.load() && (!limitsOn || GetTickCount64() >= s_toastHideAt))
     {
         WidgetHandle widget = s_toastWidget.load();
         s_toastShown.store(false);
@@ -972,7 +1034,12 @@ void RenderDronePanel(IModLoaderImGui* ui)
     // render callback caused the close to silently undo itself one frame
     // later. By the time this runs, the loader will simply not have called
     // it at all for a frame where the close already landed.
-    //
+    if (!PanelOn())
+    {
+        ui->TextDisabled("Turned off right now.");
+        return;
+    }
+
     // Opened from the mod loader's own panel list rather than via
     // OpenDroneMenu - adopt it so Escape/Q and our state track it too.
     if (s_self && s_self->hooks && s_self->hooks->UI && !s_menuOpen.exchange(true, std::memory_order_relaxed))
@@ -990,13 +1057,19 @@ void RenderDronePanel(IModLoaderImGui* ui)
         return;
     }
 
-    if (!g_drone.valid)
+    const bool limitsOn = DroneFields::Features::Limits.On();
+    const bool speedometerOn = DroneFields::Features::Speedometer.On();
+
+    // While drone-limits is off the game's values may never have been read;
+    // the other parts' controls still work.
+    if (limitsOn && !g_drone.valid)
     {
         RenderUnavailableMessage(ui, avail_x, avail_y, "Drone settings CDO not found -- engine may still be initialising.");
         return;
     }
 
     ui->SeparatorText("Speed Units & Movement Tuning");
+    BeginPartControls(ui, limitsOn);
     ui->TextDisabled("Speed presets modelled on classic construction drone mods:");
     ui->Spacing();
 
@@ -1039,6 +1112,7 @@ void RenderDronePanel(IModLoaderImGui* ui)
                                &GetLiveSpeedFields, &ApplySpeedFields,
                                &IsBuiltinSpeedName, &ComputeSpeedSuggestedBase, s_speedPresetRow);
     }
+    ui->EndDisabled();
 
     ui->Spacing();
 
@@ -1049,6 +1123,7 @@ void RenderDronePanel(IModLoaderImGui* ui)
     ui->AlignTextToFramePadding();
     ui->Text("Speed Display Unit:");
     ui->SameLine(0.0f, -1.0f);
+    ui->BeginDisabled(!limitsOn && !speedometerOn);
     if (ui->RadioButton("km/h (Metric)##unit_kmh", unitIdx == kUnitKmh))
         DroneConfig::Config::WriteSpeedUnit("km/h");
     ui->SameLine(0.0f, 10.0f);
@@ -1058,13 +1133,17 @@ void RenderDronePanel(IModLoaderImGui* ui)
     if (ui->RadioButton("cm/s (Engine)##unit_cms", unitIdx == kUnitCms))
         DroneConfig::Config::WriteSpeedUnit("cm/s");
 
+    ui->EndDisabled();
+    BeginPartControls(ui, speedometerOn);
     bool speedometer = DroneConfig::Config::ReadSpeedometer();
     if (ui->Checkbox("Speedometer##hud_speedometer", &speedometer))
         DroneConfig::Config::WriteSpeedometer(speedometer);
     if (ui->IsItemHovered())
         ui->SetTooltip("Shows the drone's speed under the HUD's distance readout, in the unit above. With mph the distance shows in feet.");
+    ui->EndDisabled();
 
     ui->Spacing();
+    BeginPartControls(ui, limitsOn);
 
     if (ui->BeginTable("##drone_tuning_table", 3, kTableFlags))
     {
@@ -1251,6 +1330,7 @@ void RenderDronePanel(IModLoaderImGui* ui)
 
         ui->EndTable();
     }
+    ui->EndDisabled();
 
     ui->Spacing();
     RenderAudioSection(ui);
