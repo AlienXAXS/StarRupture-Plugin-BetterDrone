@@ -1,3 +1,3 @@
 - BetterDrone now reads its game values from the loader's version object map (the version map), so it follows game updates through the loader and runs on every current game build. A feature whose entry is missing for your game version stays off and the game's own behaviour is kept
-- Needs ModLoader 1.23.0 or newer. The hotbar parts (the number keys and the wheel picking hotbar items, and the Ctrl+wheel hotbar page) need game Update 3 or newer and do nothing on older game versions
+- Needs ModLoader 1.23.0 or newer
 - You can now install and update it from the ModLoader's Browse list.
