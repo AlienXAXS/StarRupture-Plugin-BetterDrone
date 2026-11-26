@@ -47,6 +47,22 @@ static bool s_limitsApplied = false;
 static bool s_wasOnAudio = true, s_wasOnAnnouncer = true, s_wasOnLaser = true, s_wasOnMapMarker = true;
 static bool s_wasOnMapFollow = true, s_wasOnSpeedometer = true;
 
+// The floor guard and the body anchor belong to no feature, so they follow
+// whether the whole plugin is turned off.
+static bool s_wasAllowed = true;
+
+static bool HostDenied()
+{
+    const auto fn = PluginOptHostDenied(g_self->hooks->Network);
+    return fn && fn(g_self) == 1;
+}
+
+static void ReleaseCoreHolds()
+{
+    ResetDroneFloorGuard();
+    ResetDroneBodyAnchor();
+}
+
 // Game thread, from the tick. Calls restore on the tick a section that ran its
 // Init turns off; a section that did not run has nothing of ours to put back.
 static void FollowOff(bool ran, bool on, bool& wasOn, void (*restore)())
@@ -67,6 +83,8 @@ bool OnGameThread()   { return GetCurrentThreadId() == g_gameThreadId.load(std::
 #ifndef MODLOADER_BUILD_TAG
 #define MODLOADER_BUILD_TAG "dev"
 #endif
+
+PLUGIN_EXPORT_HOST_INFO()
 
 static PluginInfo s_info =
 {
@@ -102,8 +120,13 @@ static void OnEngineTick(float deltaSeconds)
     }
     if (s_limitsApplied)
         OnDroneTick(deltaSeconds);
-    TickDroneFloorGuard(deltaSeconds);
-    TickDroneBodyAnchor();
+    const bool hostDenied = HostDenied();
+    FollowOff(true, !hostDenied, s_wasAllowed, ReleaseCoreHolds);
+    if (!hostDenied)
+    {
+        TickDroneFloorGuard(deltaSeconds);
+        TickDroneBodyAnchor();
+    }
     FollowOff(s_ran.audio, DroneFields::Features::Audio.On(), s_wasOnAudio, DroneAudio::ResetVolumes);
     FollowOff(true, DroneFields::Features::Announcer.On(), s_wasOnAnnouncer, DroneAudio::RestoreAnnouncer);
     FollowOff(s_ran.laser, DroneFields::Features::MiningLaser.On(), s_wasOnLaser, StopDroneLaser);
@@ -364,6 +387,7 @@ extern "C" __declspec(dllexport) void PluginShutdown()
     s_limitsApplied = false;
     s_wasOnAudio = s_wasOnAnnouncer = s_wasOnLaser = s_wasOnMapMarker = true;
     s_wasOnMapFollow = s_wasOnSpeedometer = true;
+    s_wasAllowed = true;
 }
 
 BOOL APIENTRY DllMain(HMODULE, DWORD, LPVOID)
