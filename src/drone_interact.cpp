@@ -761,8 +761,8 @@ namespace
     // a menu counts as open here. The callback runs on the game thread, the
     // loader's tick runs before this plugin's, and any thread may read it.
     // The mask only picks which changes wake the callback, which stores the
-    // whole state. Every reader tests its own bit (ANY_MENU in IsGameMenuOpen,
-    // MAP, BUILD_MENU), so adding BUILD_MENU changes none of their answers.
+    // whole state. Every reader tests its own bit (ANY_MENU in IsGameMenuOpen and
+    // BUILD_MENU), so adding BUILD_MENU changes none of their answers.
     constexpr uint64_t kMenuStateMask = PLUGIN_UI_ANY_MENU | PLUGIN_UI_BUILD_MENU;
     std::atomic<uint64_t> g_uiState{ 0 };
 

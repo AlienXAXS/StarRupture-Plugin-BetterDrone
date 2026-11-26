@@ -489,13 +489,6 @@ namespace
             return;
         }
 
-        DroneState drone;
-        if (!ReadDrone(LocalPlayerController(), &drone))
-        {
-            Hide();
-            return;
-        }
-
         PluginMapOverlay::Snapshot map;
         const PluginMapOverlay::Result result = PluginMapOverlay::Sample(&map);
         if (result.widgetMapFault)
@@ -503,6 +496,14 @@ namespace
         if (result.status == PluginMapOverlay::Status::Mismatch)
             LogDisagreement(result.checked);
         if (result.status != PluginMapOverlay::Status::Ready)
+        {
+            Hide();
+            return;
+        }
+
+        // The drone is read only while the map is open and laid out.
+        DroneState drone;
+        if (!ReadDrone(LocalPlayerController(), &drone))
         {
             Hide();
             return;
