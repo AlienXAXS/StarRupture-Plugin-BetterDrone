@@ -787,11 +787,6 @@ namespace
     std::atomic<bool> g_limitKeysRegistered{ false };
 }
 
-bool LimitKeysRegistered()
-{
-    return g_limitKeysRegistered.load(std::memory_order_relaxed);
-}
-
 void RegisterLimitKeys(IPluginSelf* self)
 {
     if (g_limitKeysRegistered.load(std::memory_order_relaxed) || !self)

@@ -53,7 +53,6 @@ void SetDroneLimitsActive(bool active);
 // The Boost and Slow keys, registered together and left registered once they
 // are: while the part is denied a press is dropped, not unregistered.
 // Register is a no-op when they already are; Unregister is for shutdown.
-bool LimitKeysRegistered();
 void RegisterLimitKeys(IPluginSelf* self);
 void UnregisterLimitKeys(IPluginSelf* self);
 

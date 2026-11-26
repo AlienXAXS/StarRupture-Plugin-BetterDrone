@@ -1322,15 +1322,12 @@ void ResolveDroneInteract(IPluginSelf* self, IPluginHookScanner* scanner)
     g_addrInteract = DroneFields::ResolveFunction(self, scanner,
         DroneFields::Keys::Interact, PLUGIN_MAP_PATTERN(kInteractPattern));
 
-    if (DroneFields::Features::HoldTakeAll.On())
-    {
-        g_contextStarted = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::ContextStarted,
-            PLUGIN_MAP_PATTERN(kContextStartedPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
-        g_context = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::Context,
-            PLUGIN_MAP_PATTERN(kContextPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
-        g_contextCompleted = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::ContextCompleted,
-            PLUGIN_MAP_PATTERN(kContextCompletedPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
-    }
+    g_contextStarted = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::ContextStarted,
+        PLUGIN_MAP_PATTERN(kContextStartedPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
+    g_context = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::Context,
+        PLUGIN_MAP_PATTERN(kContextPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
+    g_contextCompleted = PluginMap::FunctionAs<InteractVoid_t>(scanner, self, DroneFields::Keys::ContextCompleted,
+        PLUGIN_MAP_PATTERN(kContextCompletedPattern), PLUGIN_SCAN_FUNCTION_START, PLUGIN_SCAN_FLAG_OPTIONAL);
 }
 
 bool InitDroneInteract()
@@ -1343,7 +1340,7 @@ bool InitDroneInteract()
 
     // Without the three context functions only the hold is off; the interact
     // key above keeps working.
-    g_holdOn = DroneFields::Features::HoldTakeAll.On() && g_contextStarted && g_context && g_contextCompleted;
+    g_holdOn = g_contextStarted && g_context && g_contextCompleted;
     if (!g_holdOn)
         LOG_INFO("DroneInteract: hold to take all is off on this build");
 
@@ -1604,7 +1601,7 @@ bool InitDroneBuildMenu()
     else
         LOG_INFO("DroneBuildMenu: no DeactivateBuildingDrone on this build -- Q or B may still end the drone");
 
-    g_placementCancelOn = DroneFields::Features::PlacementCancel.On() && g_canRestoreInitialState;
+    g_placementCancelOn = g_canRestoreInitialState != nullptr;
     if (!g_placementCancelOn)
         LOG_INFO("DroneBuildMenu: no placement-cancel keys on this build -- cancelling a placement will still end drone mode");
     return true;

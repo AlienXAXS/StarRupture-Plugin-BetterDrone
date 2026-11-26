@@ -170,13 +170,9 @@ static void InitShelterHook()
     LOG_INFO("WaveShelter: shelter is judged at the parked body while the drone is out");
 }
 
-bool InitWavePatch(bool allowDrone, bool shelter)
+bool InitWavePatch()
 {
-    if (shelter)
-        InitShelterHook();
-
-    if (!allowDrone)
-        return false;
+    InitShelterHook();
 
     uintptr_t addr = g_addr;
 

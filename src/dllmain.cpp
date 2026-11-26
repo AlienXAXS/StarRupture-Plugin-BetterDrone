@@ -24,18 +24,6 @@ static IPluginSelf* g_self = nullptr;
 
 IPluginSelf* GetSelf() { return g_self; }
 
-// Which sections PluginInit set up. A host rule can flip a section's On()
-// flag at any time, so PluginShutdown must undo what was done, not what On()
-// says now, and a section's tick must not run for a section whose Init never
-// did. Set when the section's Init was called, not on its return value: a
-// failed Init can leave a hook or keybind that its Shutdown has to remove.
-static struct InitRan
-{
-    bool audio = false, laser = false, mapMarker = false, speedometer = false;
-    bool interact = false, hotbar = false, map = false, mapFollow = false, fog = false;
-    bool buildMenu = false, escPause = false;
-} s_ran;
-
 // What the drone limits are applied as: the drone settings carry the
 // configured values while true, the game's own while false. Compared with the
 // flag on every tick, so a flip either way is caught on the game thread.
@@ -63,11 +51,10 @@ static void ReleaseCoreHolds()
     ResetDroneBodyAnchor();
 }
 
-// Game thread, from the tick. Calls restore on the tick a section that ran its
-// Init turns off; a section that did not run has nothing of ours to put back.
-static void FollowOff(bool ran, bool on, bool& wasOn, void (*restore)())
+// Game thread, from the tick. Calls restore on the tick a section turns off.
+static void FollowOff(bool on, bool& wasOn, void (*restore)())
 {
-    if (!ran || on == wasOn)
+    if (on == wasOn)
         return;
 
     wasOn = on;
@@ -121,31 +108,31 @@ static void OnEngineTick(float deltaSeconds)
     if (s_limitsApplied)
         OnDroneTick(deltaSeconds);
     const bool hostDenied = HostDenied();
-    FollowOff(true, !hostDenied, s_wasAllowed, ReleaseCoreHolds);
+    FollowOff(!hostDenied, s_wasAllowed, ReleaseCoreHolds);
     if (!hostDenied)
     {
         TickDroneFloorGuard(deltaSeconds);
         TickDroneBodyAnchor();
     }
-    FollowOff(s_ran.audio, DroneFields::Features::Audio.On(), s_wasOnAudio, DroneAudio::ResetVolumes);
-    FollowOff(true, DroneFields::Features::Announcer.On(), s_wasOnAnnouncer, DroneAudio::RestoreAnnouncer);
-    FollowOff(s_ran.laser, DroneFields::Features::MiningLaser.On(), s_wasOnLaser, StopDroneLaser);
-    FollowOff(s_ran.mapMarker, DroneFields::Features::MapMarker.On(), s_wasOnMapMarker, HideDroneMapMarker);
-    FollowOff(s_ran.mapFollow, DroneFields::Features::MapFollow.On(), s_wasOnMapFollow, StopDroneMapFollow);
-    FollowOff(s_ran.speedometer, DroneFields::Features::Speedometer.On(), s_wasOnSpeedometer, HideDroneSpeedometer);
-    if (s_ran.audio && DroneFields::Features::Audio.On())
+    FollowOff(DroneFields::Features::Audio.On(), s_wasOnAudio, DroneAudio::ResetVolumes);
+    FollowOff(DroneFields::Features::Announcer.On(), s_wasOnAnnouncer, DroneAudio::RestoreAnnouncer);
+    FollowOff(DroneFields::Features::MiningLaser.On(), s_wasOnLaser, StopDroneLaser);
+    FollowOff(DroneFields::Features::MapMarker.On(), s_wasOnMapMarker, HideDroneMapMarker);
+    FollowOff(DroneFields::Features::MapFollow.On(), s_wasOnMapFollow, StopDroneMapFollow);
+    FollowOff(DroneFields::Features::Speedometer.On(), s_wasOnSpeedometer, HideDroneSpeedometer);
+    if (DroneFields::Features::Audio.On())
         DroneAudio::Tick(deltaSeconds);
     if (DroneFields::Features::Announcer.On())
         DroneAudio::TickAnnouncer();
-    if (s_ran.laser && DroneFields::Features::MiningLaser.On())
+    if (DroneFields::Features::MiningLaser.On())
         TickDroneLaser(deltaSeconds);
     TickDroneMenuClose();
     TickDroneMenuOpen();
-    if (s_ran.mapMarker && DroneFields::Features::MapMarker.On())
+    if (DroneFields::Features::MapMarker.On())
         TickDroneMapMarker(deltaSeconds);
-    if (s_ran.mapFollow && DroneFields::Features::MapFollow.On())
+    if (DroneFields::Features::MapFollow.On())
         TickDroneMapFollow();
-    if (s_ran.speedometer && DroneFields::Features::Speedometer.On())
+    if (DroneFields::Features::Speedometer.On())
         TickDroneSpeedometer();
     TickDronePresetKeys();
 }
@@ -163,9 +150,6 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
 
     if (strcmp(section, "Controls") == 0 && strcmp(key, "Boost Key") == 0)
     {
-        if (!LimitKeysRegistered())
-            return;
-
         // Re-register from scratch rather than rely on the loader's own
         // live-rebind patch: it matches by exact combo string, and Released
         // is registered under the bare base key, not the full combo.
@@ -176,9 +160,6 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
 
     if (strcmp(section, "Controls") == 0 && strcmp(key, "Slow Key") == 0)
     {
-        if (!LimitKeysRegistered())
-            return;
-
         // Re-registered for the same reason as Boost Key: its Released is
         // registered under the bare base key.
         RebindSlowKey(g_self, newValue);
@@ -188,9 +169,6 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
 
     if (strcmp(section, "Controls") == 0 && strcmp(key, "Mining Laser Key") == 0)
     {
-        if (!s_ran.laser)
-            return;
-
         // Re-registered for the same reason as Boost Key: its Released is
         // registered under the bare base key.
         RebindDroneLaserKey(g_self, newValue);
@@ -198,8 +176,7 @@ static void OnConfigChanged(const char* section, const char* key, const char* ne
         return;
     }
 
-    if (strcmp(section, "Interaction") == 0 && strcmp(key, "Drone Reveals Map") == 0
-        && DroneFields::Features::MapReveal.On())
+    if (strcmp(section, "Interaction") == 0 && strcmp(key, "Drone Reveals Map") == 0)
         SetDroneFogEnabled(newValue && (strcmp(newValue, "1") == 0 || _stricmp(newValue, "true") == 0));
 
     if (strcmp(section, "Drone") == 0 && strcmp(key, "Keep Area Around Body Loaded") == 0)
@@ -254,74 +231,30 @@ extern "C" __declspec(dllexport) bool PluginInit(IPluginSelf* self)
     InitDroneMenuState(self);
     SetDroneBodyAnchorEnabled(DroneConfig::Config::ReadKeepBodyLoaded());
     SetDroneBodyAnchorRadiusMeters(DroneConfig::Config::ReadBodyAreaRadius());
-    if (DroneFields::Features::Audio.On())
-    {
-        s_ran.audio = true;
-        DroneAudio::Initialize();
-    }
+    // Every section is set up, whatever its On() says now: a section can be
+    // handed back at any time. Each setup that needs an address checks it, and
+    // everything that acts checks On().
+    DroneAudio::Initialize();
     InitGameSessionTracking(self);
-    if (DroneFields::Features::MiningLaser.On())
-    {
-        s_ran.laser = true;
-        InitDroneLaser(self);
-    }
+    InitDroneLaser(self);
     InitDroneUI(self);
-    if (DroneFields::Features::MapMarker.On())
-    {
-        s_ran.mapMarker = true;
-        InitDroneMapMarker(self);
-    }
-    if (DroneFields::Features::Speedometer.On())
-    {
-        s_ran.speedometer = true;
-        InitDroneSpeedometer(self);
-    }
+    InitDroneMapMarker(self);
+    InitDroneSpeedometer(self);
     InitDronePresetKeys(self);
 
     self->hooks->Engine->RegisterOnInit(OnEngineInit);
     self->hooks->Engine->RegisterOnShutdown(OnEngineShutdown);
     self->hooks->Engine->RegisterOnTick(OnEngineTick);
 
-    InitWavePatch(DroneFields::Features::AlwaysAllow.On(), DroneFields::Features::WaveShelter.On());
-    if (DroneFields::Features::Interaction.On())
-    {
-        s_ran.interact = true;
-        InitDroneInteract();
-    }
-    const bool hotbarPage = DroneFields::Features::HotbarPage.On();
-    const bool hotbarSelect = DroneFields::Features::HotbarSelect.On();
-    if (hotbarPage || hotbarSelect)
-    {
-        s_ran.hotbar = true;
-        InitDroneHotbar(self, hotbarPage, hotbarSelect);
-    }
-    if (DroneFields::Features::MapOpen.On())
-    {
-        s_ran.map = true;
-        InitDroneMap();
-    }
-    if (DroneFields::Features::MapFollow.On())
-    {
-        s_ran.mapFollow = true;
-        InitDroneMapFollow(self);
-    }
-    if (DroneFields::Features::MapReveal.On())
-    {
-        s_ran.fog = true;
-        InitDroneFog();
-    }
-    if (DroneFields::Features::BuildMenu.On())
-    {
-        s_ran.buildMenu = true;
-        InitDroneBuildMenu();
-    }
-    if (DroneFields::Features::EscPause.On())
-    {
-        s_ran.escPause = true;
-        InitDroneEscPause(self);
-    }
-    if (DroneFields::Features::Limits.On())
-        RegisterLimitKeys(self);
+    InitWavePatch();
+    InitDroneInteract();
+    InitDroneHotbar(self);
+    InitDroneMap();
+    InitDroneMapFollow(self);
+    InitDroneFog();
+    InitDroneBuildMenu();
+    InitDroneEscPause(self);
+    RegisterLimitKeys(self);
 
     if (self->hooks->UI)
     {
@@ -338,30 +271,19 @@ extern "C" __declspec(dllexport) void PluginShutdown()
 
     UnregisterLimitKeys(g_self);
     ShutdownDroneBodyAnchor();
-    if (s_ran.laser)
-        ShutdownDroneLaser(g_self);
-    if (s_ran.interact)
-        ShutdownDroneInteract();
-    if (s_ran.hotbar)
-        ShutdownDroneHotbar(g_self);
-    if (s_ran.map)
-        ShutdownDroneMap();
-    if (s_ran.fog)
-        ShutdownDroneFog();
-    if (s_ran.buildMenu)
-        ShutdownDroneBuildMenu();
-    if (s_ran.escPause)
-        ShutdownDroneEscPause(g_self);
+    ShutdownDroneLaser(g_self);
+    ShutdownDroneInteract();
+    ShutdownDroneHotbar(g_self);
+    ShutdownDroneMap();
+    ShutdownDroneFog();
+    ShutdownDroneBuildMenu();
+    ShutdownDroneEscPause(g_self);
     ShutdownWavePatch();
-    if (s_ran.audio)
-        DroneAudio::Shutdown();
+    DroneAudio::Shutdown();
     DroneAudio::ShutdownAnnouncer();
-    if (s_ran.mapFollow)
-        ShutdownDroneMapFollow(g_self);
-    if (s_ran.mapMarker)
-        ShutdownDroneMapMarker(g_self);
-    if (s_ran.speedometer)
-        ShutdownDroneSpeedometer(g_self);
+    ShutdownDroneMapFollow(g_self);
+    ShutdownDroneMapMarker(g_self);
+    ShutdownDroneSpeedometer(g_self);
     ShutdownDronePresetKeys(g_self);
     ShutdownDroneUI(g_self);
     ShutdownGameSessionTracking(g_self);
@@ -383,7 +305,6 @@ extern "C" __declspec(dllexport) void PluginShutdown()
         g_self = nullptr;
     }
 
-    s_ran = InitRan{};
     s_limitsApplied = false;
     s_wasOnAudio = s_wasOnAnnouncer = s_wasOnLaser = s_wasOnMapMarker = true;
     s_wasOnMapFollow = s_wasOnSpeedometer = true;

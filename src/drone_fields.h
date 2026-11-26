@@ -327,8 +327,8 @@ namespace DroneFields
 	// when the plugin can do nothing without it: the drone, the pilot's status
 	// and dead flag, and the player controller's character. A miss on those
 	// still refuses the plugin. Declared in OnPluginLoadHooks before any key
-	// is resolved. Every entry point of a part checks On(), so
-	// an off part runs nothing and reads none of its keys or config entries.
+	// is resolved. PluginInit sets every part up, since a part
+	// can be handed back later; everything that acts checks On().
 	namespace Features
 	{
 		inline PluginMap::Feature MiningLaser{ "mining-laser", "Mining laser",

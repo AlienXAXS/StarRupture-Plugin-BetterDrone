@@ -96,9 +96,6 @@ namespace
             std::chrono::steady_clock::now().time_since_epoch()).count());
     }
 
-    bool g_pageOn   = false;
-    bool g_selectOn = false;
-
     // ECrPlayerControlState values, read by name from the game's own UEnum.
     uint8_t g_controlNormal      = 0;
     uint8_t g_controlBuilding    = 0;
@@ -167,7 +164,8 @@ namespace
     // hotbar pages.
     bool ResolveSubsystem()
     {
-        if (g_subsystemClass.Get() && (!g_pageOn || g_setActiveHotbar) && (!g_selectOn || g_activateItem))
+        if (g_subsystemClass.Get() && (!DroneFields::Features::HotbarPage.On() || g_setActiveHotbar)
+            && (!DroneFields::Features::HotbarSelect.On() || g_activateItem))
             return true;
 
         g_subsystemClass.Reset();
@@ -195,7 +193,8 @@ namespace
             activate  = FindIntFunction(cls, kActivateItem);
         }
 
-        if ((g_pageOn && !setActive) || (g_selectOn && !activate))
+        if ((DroneFields::Features::HotbarPage.On() && !setActive)
+            || (DroneFields::Features::HotbarSelect.On() && !activate))
         {
             if (!g_missLogged)
             {
@@ -483,8 +482,8 @@ namespace
         // callbacks never ask the host: they read the g_can* answers below, so
         // a section turned off here leaves the wheel and the keys to the game
         // from the next tick, and what was queued is dropped.
-        const bool pageOn   = g_pageOn && DroneFields::Features::HotbarPage.On();
-        const bool selectOn = g_selectOn && DroneFields::Features::HotbarSelect.On();
+        const bool pageOn   = DroneFields::Features::HotbarPage.On();
+        const bool selectOn = DroneFields::Features::HotbarSelect.On();
         if (!pageOn)
             g_pageWheel.Reset();
         if (!pageOn && !selectOn)
@@ -636,7 +635,7 @@ namespace
     }
 }
 
-bool InitDroneHotbar(IPluginSelf* self, bool page, bool select)
+bool InitDroneHotbar(IPluginSelf* self)
 {
     auto* input = self ? self->hooks->Input : nullptr;
     if (!input || !input->RegisterMouseWheel)
@@ -645,20 +644,12 @@ bool InitDroneHotbar(IPluginSelf* self, bool page, bool select)
         return false;
     }
 
-    g_pageOn   = page;
-    g_selectOn = select;
-
     input->RegisterMouseWheel(&OnMouseWheel, nullptr);
-    if (select)
-    {
-        for (int32_t key = static_cast<int32_t>(EModKey::Zero); key <= static_cast<int32_t>(EModKey::Nine); ++key)
-            input->RegisterKeybind(static_cast<EModKey>(key), EModKeyEvent::Pressed, OnDigitKey);
-    }
+    for (int32_t key = static_cast<int32_t>(EModKey::Zero); key <= static_cast<int32_t>(EModKey::Nine); ++key)
+        input->RegisterKeybind(static_cast<EModKey>(key), EModKeyEvent::Pressed, OnDigitKey);
     self->hooks->Engine->RegisterOnTick(OnTick);
 
-    if (page)
-        LOG_INFO("DroneHotbar: Ctrl + mouse wheel switches the hotbar page in drone mode");
-    if (select)
+    LOG_INFO("DroneHotbar: Ctrl + mouse wheel switches the hotbar page in drone mode");
         LOG_INFO("DroneHotbar: the number keys pick a building from the hotbar in drone mode, and the mouse wheel "
                  "does too when its option is on; on foot (each one an option) the number keys pick a slot in "
                  "delete mode and the wheel steps through the building and weapon slots");
@@ -672,7 +663,7 @@ void ShutdownDroneHotbar(IPluginSelf* self)
 
     if (self->hooks->Input && self->hooks->Input->UnregisterMouseWheel)
         self->hooks->Input->UnregisterMouseWheel(&OnMouseWheel, nullptr);
-    if (self->hooks->Input && g_selectOn)
+    if (self->hooks->Input)
     {
         for (int32_t key = static_cast<int32_t>(EModKey::Zero); key <= static_cast<int32_t>(EModKey::Nine); ++key)
             self->hooks->Input->UnregisterKeybind(static_cast<EModKey>(key), EModKeyEvent::Pressed, OnDigitKey);
@@ -689,6 +680,4 @@ void ShutdownDroneHotbar(IPluginSelf* self)
     g_activateItem    = nullptr;
     g_nextLookupMs    = 0;
     g_missLogged      = false;
-    g_pageOn          = false;
-    g_selectOn        = false;
 }

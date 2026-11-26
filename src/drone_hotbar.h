@@ -14,8 +14,6 @@
 // with the building tool out (build mode or deconstruct mode); everywhere else
 // on foot the wheel and the number keys are the game's.
 
-// Start and stop listening. Call from PluginInit and PluginShutdown when
-// DroneFields::Features::HotbarPage or HotbarSelect is on; `page` and `select`
-// say which of the two is.
-bool InitDroneHotbar(IPluginSelf* self, bool page, bool select);
+// Start and stop listening. Call from PluginInit and PluginShutdown.
+bool InitDroneHotbar(IPluginSelf* self);
 void ShutdownDroneHotbar(IPluginSelf* self);

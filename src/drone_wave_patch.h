@@ -7,8 +7,8 @@ struct IPluginHookScanner;
 // refuses scans made anywhere else.
 void ResolveWavePatch(IPluginSelf* self, IPluginHookScanner* scanner);
 
-// Installs the hook of each part that is on: allowDrone lifts the wave
-// restriction (Always Allow Drone), shelter keeps the drone from counting
-// toward the player's shelter.
-bool InitWavePatch(bool allowDrone, bool shelter);
+// Installs both hooks: one lifts the wave restriction (Always Allow Drone),
+// the other keeps the drone from counting toward the player's shelter. Each
+// passes through while its part is off.
+bool InitWavePatch();
 void ShutdownWavePatch();

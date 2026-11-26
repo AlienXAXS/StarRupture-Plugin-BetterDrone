@@ -28,7 +28,7 @@
 void ResolveDroneEscPause(IPluginSelf* self, IPluginHookScanner* scanner);
 
 // Install the hook and start listening for Esc. Call from PluginInit and
-// PluginShutdown when DroneFields::Features::EscPause is on.
+// PluginShutdown.
 bool InitDroneEscPause(IPluginSelf* self);
 void ShutdownDroneEscPause(IPluginSelf* self);
 
